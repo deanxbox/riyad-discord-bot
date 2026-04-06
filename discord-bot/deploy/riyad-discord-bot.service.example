@@ -1,0 +1,15 @@
+[Unit]
+Description=Riyad Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/opt/riyad-discord-bot/discord-bot
+ExecStart=/usr/bin/node --env-file=.env src/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
