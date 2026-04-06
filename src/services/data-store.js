@@ -17,6 +17,7 @@ export class DataStore {
     this.replyChancePercent = defaultReplyChancePercent;
 
     this.initialize();
+    this.runMigrations();
     this.prepareStatements();
     this.loadCaches();
     this.ensureReplyChanceMetadata(defaultReplyChancePercent);
@@ -37,6 +38,7 @@ export class DataStore {
         user_id TEXT PRIMARY KEY,
         tracked INTEGER NOT NULL DEFAULT 0,
         nerded INTEGER NOT NULL DEFAULT 0,
+        reply_chance_override INTEGER,
         message_count INTEGER NOT NULL DEFAULT 0,
         last_downloaded_at TEXT,
         updated_at TEXT NOT NULL
@@ -75,6 +77,10 @@ export class DataStore {
     `);
   }
 
+  runMigrations() {
+    this.addColumnIfMissing('user_settings', 'reply_chance_override', 'INTEGER');
+  }
+
   prepareStatements() {
     this.ensureUserStmt = this.db.prepare(`
       INSERT INTO user_settings (user_id, tracked, nerded, message_count, updated_at)
@@ -83,8 +89,14 @@ export class DataStore {
     `);
 
     this.userSettingsStmt = this.db.prepare(`
-      SELECT user_id, tracked, nerded, message_count
+      SELECT user_id, tracked, nerded, reply_chance_override, message_count, last_downloaded_at, updated_at
       FROM user_settings
+    `);
+
+    this.userSummaryStmt = this.db.prepare(`
+      SELECT user_id, tracked, nerded, reply_chance_override, message_count, last_downloaded_at, updated_at
+      FROM user_settings
+      WHERE user_id = ?
     `);
 
     this.upsertMetadataStmt = this.db.prepare(`
@@ -108,6 +120,12 @@ export class DataStore {
     this.updateNerdedStmt = this.db.prepare(`
       UPDATE user_settings
       SET nerded = ?, updated_at = ?
+      WHERE user_id = ?
+    `);
+
+    this.updateReplyChanceOverrideStmt = this.db.prepare(`
+      UPDATE user_settings
+      SET reply_chance_override = ?, updated_at = ?
       WHERE user_id = ?
     `);
 
@@ -185,6 +203,26 @@ export class DataStore {
       ORDER BY RANDOM()
       LIMIT 1
     `);
+
+    this.randomMessageWithMetadataStmt = this.db.prepare(`
+      SELECT content, created_at, channel_id
+      FROM user_messages
+      WHERE user_id = ? AND LENGTH(TRIM(content)) > 0
+      ORDER BY RANDOM()
+      LIMIT 1
+    `);
+
+    this.exportUserMessagesStmt = this.db.prepare(`
+      SELECT content, created_at, channel_id, guild_id, message_id
+      FROM user_messages
+      WHERE user_id = ?
+      ORDER BY created_at ASC, message_id ASC
+    `);
+
+    this.totalStoredMessagesStmt = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM user_messages
+    `);
   }
 
   loadCaches() {
@@ -232,6 +270,15 @@ export class DataStore {
     }
   }
 
+  addColumnIfMissing(tableName, columnName, definition) {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+    const hasColumn = columns.some((column) => column.name === columnName);
+
+    if (!hasColumn) {
+      this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+    }
+  }
+
   hasLegacyImportCompleted() {
     return this.getMetadata('legacy_import_completed') === '1';
   }
@@ -274,10 +321,37 @@ export class DataStore {
     return this.replyChancePercent;
   }
 
+  getReplyChanceOverride(userId) {
+    const row = this.userSummaryStmt.get(String(userId));
+
+    if (!row || row.reply_chance_override === null || row.reply_chance_override === undefined) {
+      return null;
+    }
+
+    return clampPercent(row.reply_chance_override);
+  }
+
+  getEffectiveReplyChancePercent(userId) {
+    const override = this.getReplyChanceOverride(userId);
+    return override === null ? this.replyChancePercent : override;
+  }
+
   setReplyChancePercent(percent) {
     const normalizedPercent = clampPercent(percent);
     this.replyChancePercent = normalizedPercent;
     this.setMetadata('reply_chance_percent', String(normalizedPercent));
+    return normalizedPercent;
+  }
+
+  setUserReplyChanceOverride(userId, percent) {
+    const normalizedUserId = String(userId);
+    const normalizedPercent = percent === null ? null : clampPercent(percent);
+
+    this.transaction(() => {
+      this.ensureUser(normalizedUserId);
+      this.updateReplyChanceOverrideStmt.run(normalizedPercent, nowIso(), normalizedUserId);
+    });
+
     return normalizedPercent;
   }
 
@@ -287,6 +361,52 @@ export class DataStore {
 
   listNerdedUsers() {
     return [...this.nerdedUsers].sort();
+  }
+
+  getTrackedUsersCount() {
+    return this.trackedUsers.size;
+  }
+
+  getNerdedUsersCount() {
+    return this.nerdedUsers.size;
+  }
+
+  getTotalStoredMessages() {
+    return Number(this.totalStoredMessagesStmt.get()?.count || 0);
+  }
+
+  getUserSummary(userId) {
+    const normalizedUserId = String(userId);
+    const row = this.userSummaryStmt.get(normalizedUserId);
+
+    if (!row) {
+      return {
+        userId: normalizedUserId,
+        tracked: false,
+        nerded: false,
+        replyChanceOverride: null,
+        effectiveReplyChancePercent: this.replyChancePercent,
+        messageCount: 0,
+        lastDownloadedAt: null,
+        updatedAt: null,
+      };
+    }
+
+    const replyChanceOverride =
+      row.reply_chance_override === null || row.reply_chance_override === undefined
+        ? null
+        : clampPercent(row.reply_chance_override);
+
+    return {
+      userId: normalizedUserId,
+      tracked: Boolean(row.tracked),
+      nerded: Boolean(row.nerded),
+      replyChanceOverride,
+      effectiveReplyChancePercent: replyChanceOverride === null ? this.replyChancePercent : replyChanceOverride,
+      messageCount: Number(row.message_count) || 0,
+      lastDownloadedAt: row.last_downloaded_at ?? null,
+      updatedAt: row.updated_at ?? null,
+    };
   }
 
   setTracked(userId, tracked) {
@@ -489,6 +609,14 @@ export class DataStore {
 
   getRandomMessage(userId) {
     return this.randomMessageStmt.get(String(userId))?.content ?? null;
+  }
+
+  getRandomMessageWithMetadata(userId) {
+    return this.randomMessageWithMetadataStmt.get(String(userId)) ?? null;
+  }
+
+  exportUserMessages(userId) {
+    return this.exportUserMessagesStmt.all(String(userId));
   }
 }
 

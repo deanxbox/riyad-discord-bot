@@ -46,10 +46,19 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 ## Commands
 
 - `/download <user> [message_count]` starts a cancellable download job that uses Discord's guild search API to fetch that user's messages directly. The progress reply is ephemeral, so only the person who ran the command can see it.
+- `/download-status [user]` shows active download jobs, or the specific status for one user.
+- `/download-cancel <user>` cancels an active download for a user.
+- `/download-refresh-all [message_count]` refreshes every tracked user sequentially.
 - `/delete <user>` removes a tracked user's stored messages and disables tracking.
+- `/tracked-user <user>` shows stored count, tracked state, nerd state, and reply mode for a user.
 - `/nerd <user>` enables auto-reacting with the nerd emoji.
 - `/un-nerd <user>` disables auto-reacting with the nerd emoji.
 - `/reply-chance [percent]` shows or updates Riyad's random reply chance for tracked users.
+- `/reply-mode <user> [percent]` shows or updates the per-user reply chance override.
+- `/export-user <user>` exports a user's stored messages to a text attachment.
+- `/random-line <user>` shows a random stored line for a user.
+- `/stats` shows high-level bot stats.
+- `/test-reply <user> [mentioned] [replying] [roll]` simulates whether Riyad would auto-reply.
 - `/say <message> [message_id]` makes the bot send or reply with a message.
 - `/nerd-list` lists nerded users.
 - `/downloaded-list` lists tracked users.

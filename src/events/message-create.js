@@ -1,14 +1,4 @@
-function shouldReplyToTrackedMessage(message, { store, config }) {
-  if (message.author.id === config.alwaysReplyUserId && (message.mentions.has(message.client.user) || isReplyToBot(message))) {
-    return true;
-  }
-
-  if (message.mentions.has(message.client.user)) {
-    return true;
-  }
-
-  return Math.random() * 100 < store.getReplyChancePercent();
-}
+import { evaluateReplyDecision } from '../services/reply-policy.js';
 
 function truncateReply(content) {
   return content.length > 2000 ? content.slice(0, 2000) : content;
@@ -54,7 +44,17 @@ export async function handleMessageCreate(message, { store, config }) {
     }
   }
 
-  if (tracked && store.getMessageCount(userId) > 0 && shouldReplyToTrackedMessage(message, { store, config })) {
+  const replyDecision = evaluateReplyDecision({
+    userId,
+    tracked,
+    storedMessageCount: store.getMessageCount(userId),
+    mentionedBot: message.mentions.has(message.client.user),
+    repliedToBot: isReplyToBot(message),
+    store,
+    config,
+  });
+
+  if (replyDecision.shouldReply) {
     const reply = store.getRandomMessage(userId);
 
     if (reply) {

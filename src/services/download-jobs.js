@@ -108,21 +108,17 @@ export class DownloadJobManager {
     return jobId ? this.jobs.get(jobId) ?? null : null;
   }
 
-  async start({ interaction, targetUserId, limit }) {
-    const existingJob = this.getActiveJob(interaction.guildId, targetUserId);
+  createJob({ guildId, requestedById, targetUserId, limit, onProgress = null }) {
+    let resolveCompletion;
 
-    if (existingJob) {
-      await interaction.editReply({
-        content: `${formatStatus(existingJob)}\n\nA download for this user is already running.`,
-        components: buildComponents(existingJob),
-      });
-      return existingJob;
-    }
+    const completion = new Promise((resolve) => {
+      resolveCompletion = resolve;
+    });
 
-    const job = {
+    return {
       id: randomUUID(),
-      guildId: interaction.guildId,
-      requestedById: interaction.user.id,
+      guildId,
+      requestedById,
       targetUserId,
       limit,
       downloadedCount: 0,
@@ -136,7 +132,60 @@ export class DownloadJobManager {
       abortController: new AbortController(),
       progressMessage: null,
       lastRenderedAt: 0,
+      onProgress,
+      completion,
+      resolveCompletion,
     };
+  }
+
+  getActiveJobs() {
+    return [...this.jobs.values()].filter((job) => this.jobsByTarget.get(this.targetKey(job.guildId, job.targetUserId)) === job.id);
+  }
+
+  getActiveJobCount() {
+    return this.getActiveJobs().length;
+  }
+
+  getJobStatus(guildId, userId) {
+    return this.getActiveJob(guildId, userId);
+  }
+
+  cancelJob(guildId, userId) {
+    const job = this.getActiveJob(guildId, userId);
+
+    if (!job) {
+      return { cancelled: false, reason: 'No active download found for that user.' };
+    }
+
+    if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed') {
+      return { cancelled: false, reason: 'That download is already finished.' };
+    }
+
+    job.status = 'cancel_requested';
+    job.abortController.abort();
+
+    void this.render(job, { force: true });
+
+    return { cancelled: true, job };
+  }
+
+  async start({ interaction, targetUserId, limit }) {
+    const existingJob = this.getActiveJob(interaction.guildId, targetUserId);
+
+    if (existingJob) {
+      await interaction.editReply({
+        content: `${formatStatus(existingJob)}\n\nA download for this user is already running.`,
+        components: buildComponents(existingJob),
+      });
+      return existingJob;
+    }
+
+    const job = this.createJob({
+      guildId: interaction.guildId,
+      requestedById: interaction.user.id,
+      targetUserId,
+      limit,
+    });
 
     this.jobs.set(job.id, job);
     this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
@@ -151,6 +200,29 @@ export class DownloadJobManager {
     void this.run(job);
 
     return job;
+  }
+
+  startHeadless({ guildId, requestedById, targetUserId, limit, onProgress }) {
+    const existingJob = this.getActiveJob(guildId, targetUserId);
+
+    if (existingJob) {
+      return { job: existingJob, created: false };
+    }
+
+    const job = this.createJob({
+      guildId,
+      requestedById,
+      targetUserId,
+      limit,
+      onProgress,
+    });
+
+    this.jobs.set(job.id, job);
+    this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
+
+    void this.run(job);
+
+    return { job, created: true };
   }
 
   async handleButton(interaction) {
@@ -220,6 +292,7 @@ export class DownloadJobManager {
           job.retryAfterSeconds = retryAfterSeconds;
           job.documentsIndexed = documentsIndexed;
 
+          await job.onProgress?.(job);
           await this.render(job);
         },
       });
@@ -232,19 +305,26 @@ export class DownloadJobManager {
       job.retryAfterSeconds = 0;
       job.documentsIndexed = 0;
 
+      await job.onProgress?.(job);
       await this.render(job, { force: true, disableButtons: true });
+      job.resolveCompletion({ ok: true, job });
     } catch (error) {
       if (error instanceof DownloadCancelledError) {
         job.status = 'cancelled';
+        await job.onProgress?.(job);
         await this.render(job, { force: true, disableButtons: true });
+        job.resolveCompletion({ ok: false, cancelled: true, job });
       } else {
         console.error(`Download job ${job.id} failed`, error);
         job.status = 'failed';
         job.errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        await job.onProgress?.(job);
         await this.render(job, { force: true, disableButtons: true });
+        job.resolveCompletion({ ok: false, cancelled: false, error, job });
       }
     } finally {
       this.jobsByTarget.delete(this.targetKey(job.guildId, job.targetUserId));
+      this.jobs.delete(job.id);
     }
   }
 
