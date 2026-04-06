@@ -5,8 +5,8 @@ After=network.target
 [Service]
 Type=simple
 User=opc
-WorkingDirectory=/opt/riyad-discord-bot/discord-bot
-ExecStart=/usr/bin/node --env-file=.env src/index.js
+WorkingDirectory=/opt/riyad-discord-bot
+ExecStart=/usr/bin/node src/bootstrap.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production

@@ -10,6 +10,7 @@ src/
   events/          Discord event handlers
   services/        SQLite store and legacy import logic
   config.js        Runtime configuration
+  bootstrap.js     Loads .env and starts the app
   index.js         App entrypoint
 deploy/
   riyad-discord-bot.service.example
@@ -19,7 +20,7 @@ data/
 
 ## Setup
 
-1. Install Node 24 or newer on the server.
+1. Install Node 18 or newer on the server.
 2. Copy `.env.example` to `.env`.
 3. Fill in `DISCORD_TOKEN`.
 4. Optionally set `DISCORD_GUILD_ID` if you want command updates to register instantly in one server.
@@ -34,6 +35,10 @@ npm install
 ```bash
 npm start
 ```
+
+The app loads environment variables from `.env` itself, so it does not require `node --env-file` support from the system Node binary.
+
+If `node -v` on the server is below 18, upgrade Node first before running `npm install`.
 
 ## Commands
 
