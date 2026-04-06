@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 
 function nowIso() {
   return new Date().toISOString();
@@ -10,7 +10,7 @@ export class DataStore {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-    this.db = new Database(dbPath);
+    this.db = new DatabaseSync(dbPath);
     this.trackedUsers = new Set();
     this.nerdedUsers = new Set();
     this.messageCounts = new Map();

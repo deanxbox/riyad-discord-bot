@@ -5,14 +5,13 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node src/bootstrap.js",
     "start:prod": "NODE_ENV=production node src/bootstrap.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
     "dotenv": "^16.6.1",
     "discord.js": "^14.0.0"
   }

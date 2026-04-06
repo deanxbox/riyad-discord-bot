@@ -1,7 +1,7 @@
 const [major] = process.versions.node.split('.').map(Number);
 
-if (major < 18) {
-  console.error(`Node ${process.versions.node} is too old. Use Node 18 or newer.`);
+if (major < 22) {
+  console.error(`Node ${process.versions.node} is too old. Use Node 22 or newer.`);
   process.exit(1);
 }
 
