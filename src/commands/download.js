@@ -34,7 +34,7 @@ export const downloadCommand = {
     const targetUser = interaction.options.getUser('user', true);
     const limit = interaction.options.getInteger('message_count') ?? null;
 
-    await interaction.deferReply();
+    await interaction.deferReply({ ephemeral: true });
     await downloadJobs.start({
       interaction,
       targetUserId: targetUser.id,

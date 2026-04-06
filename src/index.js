@@ -8,7 +8,9 @@ import { DataStore } from './services/data-store.js';
 import { DownloadJobManager } from './services/download-jobs.js';
 import { importLegacyStoreIfPresent } from './services/legacy-import.js';
 
-const store = new DataStore(config.dbPath);
+const store = new DataStore(config.dbPath, {
+  defaultReplyChancePercent: config.defaultReplyChancePercent,
+});
 const legacyImportResult = importLegacyStoreIfPresent(store, config.rootDir);
 
 if (legacyImportResult.imported) {

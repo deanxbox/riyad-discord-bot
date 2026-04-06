@@ -25,7 +25,8 @@ export const config = {
   guildId: process.env.DISCORD_GUILD_ID?.trim() || null,
   specialUserId: process.env.SPECIAL_USER_ID?.trim() || '285021062578700289',
   specialRoleId: process.env.SPECIAL_ROLE_ID?.trim() || '1254166294656188426',
+  alwaysReplyUserId: process.env.ALWAYS_REPLY_USER_ID?.trim() || '256876746861707264',
   nerdEmoji: process.env.NERD_EMOJI?.trim() || '\u{1F913}',
-  replyChanceDenominator: 25,
+  defaultReplyChancePercent: Number(process.env.DEFAULT_REPLY_CHANCE_PERCENT?.trim() || 4),
   reactionChanceDenominator: 6,
 };

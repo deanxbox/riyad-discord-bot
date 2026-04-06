@@ -1,13 +1,21 @@
-function shouldReplyToTrackedMessage(message, config) {
+function shouldReplyToTrackedMessage(message, { store, config }) {
+  if (message.author.id === config.alwaysReplyUserId && (message.mentions.has(message.client.user) || isReplyToBot(message))) {
+    return true;
+  }
+
   if (message.mentions.has(message.client.user)) {
     return true;
   }
 
-  return Math.floor(Math.random() * config.replyChanceDenominator) === 0;
+  return Math.random() * 100 < store.getReplyChancePercent();
 }
 
 function truncateReply(content) {
   return content.length > 2000 ? content.slice(0, 2000) : content;
+}
+
+function isReplyToBot(message) {
+  return message.reference?.messageId && message.mentions.repliedUser?.id === message.client.user.id;
 }
 
 export async function handleMessageCreate(message, { store, config }) {
@@ -46,7 +54,7 @@ export async function handleMessageCreate(message, { store, config }) {
     }
   }
 
-  if (tracked && store.getMessageCount(userId) > 0 && shouldReplyToTrackedMessage(message, config)) {
+  if (tracked && store.getMessageCount(userId) > 0 && shouldReplyToTrackedMessage(message, { store, config })) {
     const reply = store.getRandomMessage(userId);
 
     if (reply) {

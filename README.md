@@ -24,13 +24,14 @@ data/
 2. Copy `.env.example` to `.env`.
 3. Fill in `DISCORD_TOKEN`.
 4. Optionally set `DISCORD_GUILD_ID` if you want command updates to register instantly in one server.
-5. Install dependencies:
+5. Optionally tune `DEFAULT_REPLY_CHANCE_PERCENT` and `ALWAYS_REPLY_USER_ID` in `.env`.
+6. Install dependencies:
 
 ```bash
 npm install
 ```
 
-6. Start the bot:
+7. Start the bot:
 
 ```bash
 npm start
@@ -44,10 +45,11 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 
 ## Commands
 
-- `/download <user> [message_count]` starts a cancellable download job that uses Discord's guild search API to fetch that user's messages directly, shows live progress, and exposes a cancel button.
+- `/download <user> [message_count]` starts a cancellable download job that uses Discord's guild search API to fetch that user's messages directly. The progress reply is ephemeral, so only the person who ran the command can see it.
 - `/delete <user>` removes a tracked user's stored messages and disables tracking.
 - `/nerd <user>` enables auto-reacting with the nerd emoji.
 - `/un-nerd <user>` disables auto-reacting with the nerd emoji.
+- `/reply-chance [percent]` shows or updates Riyad's random reply chance for tracked users.
 - `/say <message> [message_id]` makes the bot send or reply with a message.
 - `/nerd-list` lists nerded users.
 - `/downloaded-list` lists tracked users.

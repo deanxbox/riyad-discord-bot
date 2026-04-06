@@ -7,17 +7,19 @@ function nowIso() {
 }
 
 export class DataStore {
-  constructor(dbPath) {
+  constructor(dbPath, { defaultReplyChancePercent = 4 } = {}) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     this.db = new DatabaseSync(dbPath);
     this.trackedUsers = new Set();
     this.nerdedUsers = new Set();
     this.messageCounts = new Map();
+    this.replyChancePercent = defaultReplyChancePercent;
 
     this.initialize();
     this.prepareStatements();
     this.loadCaches();
+    this.ensureReplyChanceMetadata(defaultReplyChancePercent);
   }
 
   initialize() {
@@ -205,6 +207,12 @@ export class DataStore {
 
       this.messageCounts.set(userId, Number(row.message_count) || 0);
     }
+
+    const storedReplyChance = Number(this.getMetadata('reply_chance_percent'));
+
+    if (Number.isFinite(storedReplyChance)) {
+      this.replyChancePercent = clampPercent(storedReplyChance);
+    }
   }
 
   close() {
@@ -240,6 +248,12 @@ export class DataStore {
     this.upsertMetadataStmt.run(key, value);
   }
 
+  ensureReplyChanceMetadata(defaultReplyChancePercent) {
+    if (this.getMetadata('reply_chance_percent') === null) {
+      this.setReplyChancePercent(defaultReplyChancePercent);
+    }
+  }
+
   ensureUser(userId) {
     this.ensureUserStmt.run(String(userId), nowIso());
   }
@@ -254,6 +268,17 @@ export class DataStore {
 
   getMessageCount(userId) {
     return this.messageCounts.get(String(userId)) || 0;
+  }
+
+  getReplyChancePercent() {
+    return this.replyChancePercent;
+  }
+
+  setReplyChancePercent(percent) {
+    const normalizedPercent = clampPercent(percent);
+    this.replyChancePercent = normalizedPercent;
+    this.setMetadata('reply_chance_percent', String(normalizedPercent));
+    return normalizedPercent;
   }
 
   listTrackedUsers() {
@@ -465,4 +490,14 @@ export class DataStore {
   getRandomMessage(userId) {
     return this.randomMessageStmt.get(String(userId))?.content ?? null;
   }
+}
+
+function clampPercent(value) {
+  const normalizedValue = Number(value);
+
+  if (!Number.isFinite(normalizedValue)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(normalizedValue)));
 }
