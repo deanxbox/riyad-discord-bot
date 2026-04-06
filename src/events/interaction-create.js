@@ -1,6 +1,14 @@
 import { commandCollection } from '../commands/index.js';
 
 export async function handleInteractionCreate(interaction, context) {
+  if (interaction.isButton()) {
+    const handled = await context.downloadJobs.handleButton(interaction);
+
+    if (handled) {
+      return;
+    }
+  }
+
   if (!interaction.isChatInputCommand()) {
     return;
   }

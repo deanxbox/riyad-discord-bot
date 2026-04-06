@@ -44,7 +44,7 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 
 ## Commands
 
-- `/download <user> [message_count]` downloads a user's messages from the current guild into SQLite.
+- `/download <user> [message_count]` starts a cancellable download job that uses Discord's guild search API to fetch that user's messages directly, shows live progress, and exposes a cancel button.
 - `/delete <user>` removes a tracked user's stored messages and disables tracking.
 - `/nerd <user>` enables auto-reacting with the nerd emoji.
 - `/un-nerd <user>` disables auto-reacting with the nerd emoji.

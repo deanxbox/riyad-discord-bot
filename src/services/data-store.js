@@ -52,6 +52,24 @@ export class DataStore {
 
       CREATE INDEX IF NOT EXISTS idx_user_messages_user_id
       ON user_messages (user_id);
+
+      CREATE TABLE IF NOT EXISTS download_staging_messages (
+        job_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        guild_id TEXT,
+        channel_id TEXT,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, message_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_download_staging_messages_job_id
+      ON download_staging_messages (job_id);
+    `);
+
+    this.db.exec(`
+      DELETE FROM download_staging_messages;
     `);
   }
 
@@ -112,6 +130,50 @@ export class DataStore {
         created_at
       )
       VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    this.insertStagingMessageStmt = this.db.prepare(`
+      INSERT OR IGNORE INTO download_staging_messages (
+        job_id,
+        message_id,
+        user_id,
+        guild_id,
+        channel_id,
+        content,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.deleteStagingMessagesStmt = this.db.prepare(`
+      DELETE FROM download_staging_messages
+      WHERE job_id = ?
+    `);
+
+    this.countStagingMessagesStmt = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM download_staging_messages
+      WHERE job_id = ?
+    `);
+
+    this.promoteStagingMessagesStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO user_messages (
+        message_id,
+        user_id,
+        guild_id,
+        channel_id,
+        content,
+        created_at
+      )
+      SELECT
+        message_id,
+        user_id,
+        guild_id,
+        channel_id,
+        content,
+        created_at
+      FROM download_staging_messages
+      WHERE job_id = ?
     `);
 
     this.randomMessageStmt = this.db.prepare(`
@@ -252,6 +314,74 @@ export class DataStore {
 
     this.trackedUsers.add(normalizedUserId);
     this.messageCounts.set(normalizedUserId, 0);
+  }
+
+  beginStagedUserDownload(jobId, userId) {
+    const normalizedJobId = String(jobId);
+    const normalizedUserId = String(userId);
+
+    this.transaction(() => {
+      this.ensureUser(normalizedUserId);
+      this.deleteStagingMessagesStmt.run(normalizedJobId);
+    });
+  }
+
+  addStagedDownloadedMessages(jobId, userId, messages) {
+    if (!messages.length) {
+      return 0;
+    }
+
+    const normalizedJobId = String(jobId);
+    const normalizedUserId = String(userId);
+    let insertedCount = 0;
+
+    this.transaction(() => {
+      this.ensureUser(normalizedUserId);
+
+      for (const message of messages) {
+        const result = this.insertStagingMessageStmt.run(
+          normalizedJobId,
+          message.messageId,
+          normalizedUserId,
+          message.guildId,
+          message.channelId,
+          message.content,
+          message.createdAt,
+        );
+
+        insertedCount += result.changes;
+      }
+    });
+
+    return insertedCount;
+  }
+
+  getStagedDownloadCount(jobId) {
+    return Number(this.countStagingMessagesStmt.get(String(jobId))?.count || 0);
+  }
+
+  commitStagedUserDownload(jobId, userId) {
+    const normalizedJobId = String(jobId);
+    const normalizedUserId = String(userId);
+    const nextCount = this.getStagedDownloadCount(normalizedJobId);
+
+    this.transaction(() => {
+      this.ensureUser(normalizedUserId);
+      this.deleteUserMessagesStmt.run(normalizedUserId);
+      this.promoteStagingMessagesStmt.run(normalizedJobId);
+      this.updateTrackedStmt.run(1, nowIso(), normalizedUserId);
+      this.updateMessageCountStmt.run(nextCount, nowIso(), nowIso(), normalizedUserId);
+      this.deleteStagingMessagesStmt.run(normalizedJobId);
+    });
+
+    this.trackedUsers.add(normalizedUserId);
+    this.messageCounts.set(normalizedUserId, nextCount);
+
+    return nextCount;
+  }
+
+  discardStagedUserDownload(jobId) {
+    this.deleteStagingMessagesStmt.run(String(jobId));
   }
 
   addDownloadedMessages(userId, messages) {

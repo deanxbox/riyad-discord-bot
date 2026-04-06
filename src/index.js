@@ -5,6 +5,7 @@ import { handleMessageCreate } from './events/message-create.js';
 import { handleRaw } from './events/raw.js';
 import { handleReady } from './events/ready.js';
 import { DataStore } from './services/data-store.js';
+import { DownloadJobManager } from './services/download-jobs.js';
 import { importLegacyStoreIfPresent } from './services/legacy-import.js';
 
 const store = new DataStore(config.dbPath);
@@ -24,7 +25,8 @@ const client = new Client({
   ],
 });
 
-const context = { client, config, store };
+const downloadJobs = new DownloadJobManager({ client, config, store });
+const context = { client, config, store, downloadJobs };
 
 client.once(Events.ClientReady, async () => {
   await handleReady(client, config);
