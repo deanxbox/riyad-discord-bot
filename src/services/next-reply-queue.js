@@ -19,7 +19,11 @@ export class NextReplyQueue {
   }
 
   consume(targetUserId) {
-    const index = this.entries.findIndex((entry) => entry.targetUserId === null || entry.targetUserId === targetUserId);
+    let index = this.entries.findIndex((entry) => entry.targetUserId === targetUserId);
+
+    if (index === -1) {
+      index = this.entries.findIndex((entry) => entry.targetUserId === null);
+    }
 
     if (index === -1) {
       return null;

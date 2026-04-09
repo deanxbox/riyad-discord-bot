@@ -8,6 +8,7 @@ import { DataStore } from './services/data-store.js';
 import { DownloadJobManager } from './services/download-jobs.js';
 import { importLegacyStoreIfPresent } from './services/legacy-import.js';
 import { NextReplyQueue } from './services/next-reply-queue.js';
+import { VoiceManager } from './services/voice-manager.js';
 
 const store = new DataStore(config.dbPath, {
   defaultReplyChancePercent: config.defaultReplyChancePercent,
@@ -30,7 +31,8 @@ const client = new Client({
 
 const downloadJobs = new DownloadJobManager({ client, config, store });
 const nextReplyQueue = new NextReplyQueue();
-const context = { client, config, store, downloadJobs, nextReplyQueue };
+const voiceManager = new VoiceManager(client);
+const context = { client, config, store, downloadJobs, nextReplyQueue, voiceManager };
 
 client.once(Events.ClientReady, async () => {
   await handleReady(client, config);
@@ -42,6 +44,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.on(Events.MessageCreate, async (message) => {
   await handleMessageCreate(message, context);
+});
+
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  await voiceManager.handleVoiceStateUpdate(oldState, newState);
 });
 
 client.on(Events.Raw, async (packet) => {

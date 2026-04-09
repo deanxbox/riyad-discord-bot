@@ -1,56 +1,38 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { getVoiceConnection } from '@discordjs/voice';
 import { requireAdmin } from './helpers.js';
 
 export const leaveCommand = {
   data: new SlashCommandBuilder()
     .setName('leave')
-    .setDescription('Leave a voice channel by ID')
-    .addStringOption((option) =>
-      option
-        .setName('voice_channel_id')
-        .setDescription('The voice channel ID to leave')
-        .setRequired(true),
-    ),
+    .setDescription('Leave the voice channel Riyad is currently in'),
 
-  async execute({ interaction, client, config }) {
+  async execute({ interaction, voiceManager, config }) {
     if (!(await requireAdmin(interaction, config))) {
       return;
     }
 
-    const voiceChannelId = interaction.options.getString('voice_channel_id', true);
-    const channel = await client.channels.fetch(voiceChannelId).catch(() => null);
-
-    if (!channel?.guild) {
+    if (!interaction.inGuild()) {
       await interaction.reply({
-        content: 'That channel ID was not found in a guild.',
+        content: 'This command only works inside a server.',
         ephemeral: true,
       });
       return;
     }
 
-    const connection = getVoiceConnection(channel.guild.id);
+    const currentChannelId = voiceManager.getCurrentChannelId(interaction.guildId);
 
-    if (!connection) {
+    if (!currentChannelId) {
       await interaction.reply({
-        content: 'Riyad is not connected to a voice channel in that guild.',
+        content: 'Riyad is not connected to a voice channel in this guild.',
         ephemeral: true,
       });
       return;
     }
 
-    if (connection.joinConfig.channelId !== channel.id) {
-      await interaction.reply({
-        content: `Riyad is connected to a different voice channel: <#${connection.joinConfig.channelId}>.`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    connection.destroy();
+    voiceManager.leave(interaction.guildId);
 
     await interaction.reply({
-      content: `Left voice channel <#${channel.id}>.`,
+      content: `Left voice channel <#${currentChannelId}>.`,
       ephemeral: true,
     });
   },

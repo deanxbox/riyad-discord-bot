@@ -1,51 +1,66 @@
-import { SlashCommandBuilder, ChannelType } from 'discord.js';
-import { entersState, joinVoiceChannel, VoiceConnectionStatus } from '@discordjs/voice';
+import { SlashCommandBuilder } from 'discord.js';
 import { requireAdmin } from './helpers.js';
 
 export const joinCommand = {
   data: new SlashCommandBuilder()
     .setName('join')
-    .setDescription('Join a voice channel by ID')
+    .setDescription('Join a voice channel by name or ID')
     .addStringOption((option) =>
       option
-        .setName('voice_channel_id')
-        .setDescription('The voice channel ID to join')
+        .setName('voice_channel')
+        .setDescription('The voice channel name or ID to join')
         .setRequired(true),
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('persistence')
+        .setDescription('Whether Riyad should rejoin if disconnected from that channel')
+        .setRequired(false),
     ),
 
-  async execute({ interaction, client, config }) {
+  async execute({ interaction, voiceManager, config }) {
     if (!(await requireAdmin(interaction, config))) {
       return;
     }
 
-    const voiceChannelId = interaction.options.getString('voice_channel_id', true);
-    const channel = await client.channels.fetch(voiceChannelId).catch(() => null);
-
-    if (!channel || (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice)) {
+    if (!interaction.inGuild()) {
       await interaction.reply({
-        content: 'That ID does not belong to a guild voice channel.',
+        content: 'This command only works inside a server.',
         ephemeral: true,
       });
       return;
     }
 
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: false,
-    });
+    const query = interaction.options.getString('voice_channel', true);
+    const persistence = interaction.options.getBoolean('persistence') ?? true;
+    const resolved = await voiceManager.resolveVoiceChannel(interaction.guild, query);
+
+    if (resolved.ambiguous) {
+      await interaction.reply({
+        content: `Multiple voice channels matched that query: ${resolved.matches.map((channel) => `#${channel.name} (${channel.id})`).join(', ')}`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channel = resolved.channel;
+
+    if (!channel) {
+      await interaction.reply({
+        content: 'No matching voice channel was found by that name or ID.',
+        ephemeral: true,
+      });
+      return;
+    }
 
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+      await voiceManager.join(channel, { persistence });
 
       await interaction.reply({
-        content: `Joined voice channel <#${channel.id}>.`,
+        content: `Joined voice channel <#${channel.id}>.\nPersistence: ${persistence ? 'enabled' : 'disabled'}.`,
         ephemeral: true,
       });
     } catch (error) {
-      connection.destroy();
       console.error(`Failed to join voice channel ${channel.id}`, error);
 
       await interaction.reply({
