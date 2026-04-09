@@ -7,6 +7,7 @@ import { handleReady } from './events/ready.js';
 import { DataStore } from './services/data-store.js';
 import { DownloadJobManager } from './services/download-jobs.js';
 import { importLegacyStoreIfPresent } from './services/legacy-import.js';
+import { NextReplyQueue } from './services/next-reply-queue.js';
 
 const store = new DataStore(config.dbPath, {
   defaultReplyChancePercent: config.defaultReplyChancePercent,
@@ -28,7 +29,8 @@ const client = new Client({
 });
 
 const downloadJobs = new DownloadJobManager({ client, config, store });
-const context = { client, config, store, downloadJobs };
+const nextReplyQueue = new NextReplyQueue();
+const context = { client, config, store, downloadJobs, nextReplyQueue };
 
 client.once(Events.ClientReady, async () => {
   await handleReady(client, config);

@@ -57,8 +57,11 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 - `/reply-mode <user> [percent]` shows or updates the per-user reply chance override.
 - `/export-user <user>` exports a user's stored messages to a text attachment.
 - `/random-line <user>` shows a random stored line for a user.
-- `/stats` shows high-level bot stats.
+- `/stats` posts a richer public stats card with uptime, ping, memory, counts, and voice connection info.
 - `/test-reply <user> [mentioned] [replying] [roll]` simulates whether Riyad would auto-reply.
+- `/next-reply <message> [user_id]` queues the next custom auto-reply, globally or for one specific user.
+- `/join <voice_channel_id>` joins a voice channel by ID.
+- `/leave <voice_channel_id>` leaves a voice channel by ID.
 - `/say <message> [message_id]` makes the bot send or reply with a message.
 - `/nerd-list` lists nerded users.
 - `/downloaded-list` lists tracked users.

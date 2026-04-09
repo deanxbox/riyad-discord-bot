@@ -8,7 +8,7 @@ function isReplyToBot(message) {
   return message.reference?.messageId && message.mentions.repliedUser?.id === message.client.user.id;
 }
 
-export async function handleMessageCreate(message, { store, config }) {
+export async function handleMessageCreate(message, { store, config, nextReplyQueue }) {
   if (!message.inGuild() || message.author.bot) {
     return;
   }
@@ -55,7 +55,8 @@ export async function handleMessageCreate(message, { store, config }) {
   });
 
   if (replyDecision.shouldReply) {
-    const reply = store.getRandomMessage(userId);
+    const queuedReply = nextReplyQueue.consume(userId);
+    const reply = queuedReply?.message ?? store.getRandomMessage(userId);
 
     if (reply) {
       await message.reply({

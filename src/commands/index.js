@@ -6,6 +6,9 @@ import { downloadStatusCommand } from './download-status.js';
 import { downloadCommand } from './download.js';
 import { downloadedListCommand } from './downloaded-list.js';
 import { exportUserCommand } from './export-user.js';
+import { joinCommand } from './join.js';
+import { leaveCommand } from './leave.js';
+import { nextReplyCommand } from './next-reply.js';
 import { nerdCommand } from './nerd.js';
 import { nerdListCommand } from './nerd-list.js';
 import { replyChanceCommand } from './reply-chance.js';
@@ -32,6 +35,9 @@ const commands = [
   randomLineCommand,
   statsCommand,
   testReplyCommand,
+  nextReplyCommand,
+  joinCommand,
+  leaveCommand,
   sayCommand,
   nerdListCommand,
   downloadedListCommand,
