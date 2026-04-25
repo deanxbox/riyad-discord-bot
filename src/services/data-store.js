@@ -70,6 +70,22 @@ export class DataStore {
 
       CREATE INDEX IF NOT EXISTS idx_download_staging_messages_job_id
       ON download_staging_messages (job_id);
+
+      CREATE TABLE IF NOT EXISTS trivia_scores (
+        user_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, guild_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS trivia_active (
+        guild_id TEXT PRIMARY KEY,
+        correct_user_id TEXT NOT NULL,
+        message_content TEXT NOT NULL,
+        option_user_ids TEXT NOT NULL,
+        answered_user_ids TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      );
     `);
 
     this.db.exec(`
@@ -222,6 +238,39 @@ export class DataStore {
     this.totalStoredMessagesStmt = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM user_messages
+    `);
+
+    this.insertTriviaActiveStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO trivia_active (guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at)
+      VALUES (?, ?, ?, ?, '[]', ?)
+    `);
+
+    this.selectTriviaActiveStmt = this.db.prepare(`
+      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at
+      FROM trivia_active
+      WHERE guild_id = ?
+    `);
+
+    this.deleteTriviaActiveStmt = this.db.prepare(`
+      DELETE FROM trivia_active WHERE guild_id = ?
+    `);
+
+    this.updateTriviaAnsweredStmt = this.db.prepare(`
+      UPDATE trivia_active SET answered_user_ids = ? WHERE guild_id = ?
+    `);
+
+    this.upsertTriviaScoreStmt = this.db.prepare(`
+      INSERT INTO trivia_scores (user_id, guild_id, score)
+      VALUES (?, ?, 1)
+      ON CONFLICT(user_id, guild_id) DO UPDATE SET score = score + 1
+    `);
+
+    this.selectTriviaLeaderboardStmt = this.db.prepare(`
+      SELECT user_id, score
+      FROM trivia_scores
+      WHERE guild_id = ?
+      ORDER BY score DESC
+      LIMIT ?
     `);
   }
 
@@ -617,6 +666,52 @@ export class DataStore {
 
   exportUserMessages(userId) {
     return this.exportUserMessagesStmt.all(String(userId));
+  }
+
+  setActiveTriviaQuestion(guildId, { correctUserId, messageContent, optionUserIds }) {
+    this.insertTriviaActiveStmt.run(
+      String(guildId),
+      String(correctUserId),
+      messageContent,
+      JSON.stringify(optionUserIds.map(String)),
+      nowIso(),
+    );
+  }
+
+  getActiveTriviaQuestion(guildId) {
+    return this.selectTriviaActiveStmt.get(String(guildId)) ?? null;
+  }
+
+  clearActiveTriviaQuestion(guildId) {
+    this.deleteTriviaActiveStmt.run(String(guildId));
+  }
+
+  // Atomically registers a user's answer attempt.
+  // Returns { status: 'no_question' | 'already_answered' | 'ok', question? }
+  triviaAttempt(guildId, userId) {
+    const normalizedGuildId = String(guildId);
+    const normalizedUserId = String(userId);
+
+    return this.transaction(() => {
+      const question = this.selectTriviaActiveStmt.get(normalizedGuildId);
+      if (!question) return { status: 'no_question' };
+
+      const answeredIds = JSON.parse(question.answered_user_ids);
+      if (answeredIds.includes(normalizedUserId)) return { status: 'already_answered' };
+
+      answeredIds.push(normalizedUserId);
+      this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), normalizedGuildId);
+
+      return { status: 'ok', question };
+    });
+  }
+
+  triviaIncrementScore(userId, guildId) {
+    this.upsertTriviaScoreStmt.run(String(userId), String(guildId));
+  }
+
+  triviaGetLeaderboard(guildId, limit = 10) {
+    return this.selectTriviaLeaderboardStmt.all(String(guildId), limit);
   }
 }
 

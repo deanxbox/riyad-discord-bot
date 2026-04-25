@@ -1,5 +1,7 @@
 import { Collection } from 'discord.js';
 import { deleteCommand } from './delete.js';
+import { scoreboardCommand } from './scoreboard.js';
+import { triviaCommand } from './trivia.js';
 import { downloadCancelCommand } from './download-cancel.js';
 import { downloadRefreshAllCommand } from './download-refresh-all.js';
 import { downloadStatusCommand } from './download-status.js';
@@ -41,6 +43,8 @@ const commands = [
   sayCommand,
   nerdListCommand,
   downloadedListCommand,
+  triviaCommand,
+  scoreboardCommand,
 ];
 
 export const commandCollection = new Collection(commands.map((command) => [command.data.name, command]));
