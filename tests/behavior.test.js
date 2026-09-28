@@ -5,6 +5,7 @@ import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { sayCommand } from '../src/commands/say.js';
+import { scoreboardCommand } from '../src/commands/scoreboard.js';
 import { DataStore, isTriviaExpired } from '../src/services/data-store.js';
 import { createProgressPublisher } from '../src/services/download-jobs.js';
 import { classifySearchMessage, downloadUserHistory } from '../src/services/history-downloader.js';
@@ -105,6 +106,24 @@ async function main() {
     assert.equal(resolvedA.displayName, 'Resolved');
     const missing = createUserResolver({ users: { cache: new Map(), fetch: async () => { throw Error('unknown user'); } }, guilds: { cache: new Map() } });
     assert.equal((await missing('223456789012345678')).username, '223456789012345678', 'unknown users fall back to their ID');
+    assert.equal((await missing('223456789012345678')).avatarUrl, 'https://cdn.discordapp.com/embed/avatars/0.png',
+      'unknown users receive an actual default avatar URL');
+    const scoreboardCalls = [];
+    await scoreboardCommand.execute({
+      store: { triviaGetLeaderboard: () => [{ user_id: '123456789012345678', score: 2 }, { user_id: '223456789012345678', score: 1 }] },
+      interaction: {
+        guild: { id: '123456789012345678', members: { cache: new Map(), fetch: async id => {
+          scoreboardCalls.push(`fetch:${id}`);
+          if (id === '223456789012345678') throw Error('not a member');
+          return { displayName: 'Player' };
+        } } },
+        deferReply: async () => scoreboardCalls.push('defer'),
+        editReply: async message => scoreboardCalls.push(message.embeds[0].data.description),
+      },
+    });
+    assert.equal(scoreboardCalls[0], 'defer', 'acknowledge scoreboard before fetching members');
+    assert.match(scoreboardCalls.at(-1), /Player — 2 pts/);
+    assert.match(scoreboardCalls.at(-1), /<@223456789012345678> — 1 pt/, 'missing guild members fall back to mentions');
 
     store.setActiveTriviaQuestion('guild', {
       correctUserId: '123', messageContent: 'text', optionUserIds: ['123'],
@@ -121,10 +140,18 @@ async function main() {
     jobs.getActiveJobs = () => [];
     const queue = new EventEmitter();
     queue.list = () => [];
+    const guildMembers = {
+      cache: new Map(),
+      fetch: async id => id === fakeUser.id ? { id, user: fakeUser, displayName: 'Guild player' } : null,
+      search: async ({ query, limit }) => {
+        assert.equal(limit, 10);
+        return new Map(query === 'res' ? [[fakeUser.id, { id: fakeUser.id, user: fakeUser, displayName: 'Guild player' }]] : []);
+      },
+    };
     server = startWebDashboard({
       config, store, downloadJobs: jobs,
       nextReplyQueue: queue,
-      client: { ...fakeClient, guilds: { cache: new Map([['123456789012345678', { id: '123456789012345678', name: 'Test guild', members: { cache: new Map() }, roles: { cache: new Map() } }]]) }, ws: { ping: 1 } },
+      client: { ...fakeClient, guilds: { cache: new Map([['123456789012345678', { id: '123456789012345678', name: 'Test guild', members: guildMembers, roles: { cache: new Map() } }]]) }, ws: { ping: 1 } },
     });
     if (!server.listening) await once(server, 'listening');
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -140,6 +167,12 @@ async function main() {
     const cookieApi = (route, options = {}) => fetch(base + route, { ...options, headers: { Cookie: cookie.split(';')[0], ...(options.headers || {}) } });
     assert.equal((await cookieApi('/api/session')).status, 200);
     assert.equal((await cookieApi('/api/state')).status, 200, 'cookie works without bearer after reload');
+    const memberRoute = '/api/members?guildId=123456789012345678&query=res';
+    assert.equal((await fetch(base + memberRoute)).status, 401, 'member search requires dashboard authentication');
+    assert.equal((await api('/api/members?guildId=223456789012345678&query=res')).status, 400, 'member search rejects unknown guilds');
+    assert.equal((await api('/api/members?guildId=123456789012345678&query=r')).status, 400, 'member search rejects broad queries');
+    assert.equal((await (await api(memberRoute)).json()).members[0].displayName, 'Guild player');
+    assert.equal((await (await api('/api/members?guildId=123456789012345678&query=123456789012345678')).json()).members[0].id, fakeUser.id);
     assert.equal((await cookieApi('/api/settings', { method: 'POST', body: JSON.stringify({ reactionChanceDenominator: 7 }) })).status, 403);
     assert.equal((await cookieApi('/api/settings', { method: 'POST', headers: { 'X-Requested-With': 'dashboard', Origin: 'http://evil.test' }, body: JSON.stringify({ reactionChanceDenominator: 7 }) })).status, 403);
     assert.equal((await cookieApi('/api/settings', { method: 'POST', headers: { 'X-Requested-With': 'dashboard', Origin: base }, body: JSON.stringify({ reactionChanceDenominator: 7 }) })).status, 200);
@@ -193,6 +226,10 @@ async function main() {
     const state = await (await api('/api/state')).json();
     assert.equal(state.guilds[0].name, 'Test guild');
     assert.equal(JSON.stringify(state).includes('test-secret'), false);
+    store.triviaIncrementScore(fakeUser.id, '123456789012345678');
+    const leaderboardState = await (await api('/api/state?guildId=123456789012345678')).json();
+    assert.equal(leaderboardState.leaderboard[0].score, 1);
+    assert.equal(leaderboardState.leaderboard[0].user.avatarUrl, 'https://cdn.discordapp.com/a.png');
     assert.equal((await api('/api/settings', { method: 'POST', body: JSON.stringify({ specialUserId: '223456789012345678' }) })).status, 200);
     assert.equal(config.specialUserId, '223456789012345678');
     assert.equal(store.getDashboardSetting('specialUserId', null), '223456789012345678');

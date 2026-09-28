@@ -37,10 +37,11 @@
           <div id="user-list" class="user-list"></div></article>
       </section>
       <section id="downloads" class="tab">
-        <article class="card"><h2>Download history</h2><form id="download-form" class="form-grid">
-          <label>User ID<input id="download-user" required inputmode="numeric" pattern="[0-9]{17,20}" aria-describedby="download-help"></label>
+        <article class="card"><h2>Start a download</h2><form id="download-form" class="form-grid">
+          <div class="member-picker"><label for="member-search">Find server member</label><input id="member-search" type="search" placeholder="Username or Discord ID" autocomplete="off" aria-controls="member-results" aria-describedby="download-help"><div id="member-results" class="member-results" aria-live="polite"></div></div>
           <label>Server<select id="download-guild" required></select></label><label>Message limit <span class="muted">(optional)</span><input id="download-limit" type="number" min="1" placeholder="All messages"></label>
-          <button class="primary" type="submit">Start download</button><small id="download-help">Enter a Discord user ID (17–20 digits).</small></form>
+          <label>Selected user ID<input id="download-user" required inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Select above or paste an ID"></label>
+          <button class="primary" type="submit">Start download</button><small id="download-help">Search this server, select a member, or paste a Discord ID.</small></form>
           <button id="refresh-all" class="quiet">Refresh all tracked users</button></article>
         <article class="card"><h2>Active jobs</h2><div id="job-list" class="user-list"></div></article>
       </section>
@@ -52,11 +53,14 @@
         <label>Special admin user ID<input name="specialUserId" required pattern="[0-9]{17,20}"><small data-resolved="specialUserId"></small></label>
         <label>Special admin role ID<input name="specialRoleId" required pattern="[0-9]{17,20}"><small data-resolved="specialRoleId"></small></label>
         <label>Guild ID<input name="guildId" pattern="[0-9]{17,20}"><small data-resolved="guildId"></small><small>Optional; blank disables the default guild.</small></label><button class="primary">Save configuration</button></form></article></section>
-      <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><ol id="scores"></ol></article></section>
+      <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><ol id="scores" class="score-list"></ol></article></section>
       <section id="queue" class="tab"><article class="card"><h2>Next-reply queue</h2><div id="queue-list" class="user-list"></div><p class="muted">Queue changes are managed in Discord.</p></article></section>
       <footer><button id="backup" class="quiet">Download database backup</button><span class="muted">Private dashboard · localhost</span></footer>
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <dialog id="drawer" aria-labelledby="drawer-title"><form method="dialog"><button class="close" aria-label="Close details">×</button></form><h2 id="drawer-title">User details</h2><div id="drawer-body"></div></dialog>
+  <dialog id="drawer" aria-labelledby="drawer-title">
+    <div class="drawer-header"><div><p class="eyebrow">USER MANAGEMENT</p><h2 id="drawer-title">User details</h2></div><form method="dialog"><button class="close" aria-label="Close details">×</button></form></div>
+    <div id="drawer-body"></div>
+  </dialog>
 </body></html>

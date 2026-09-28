@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
 const snowflake = /^\d{17,20}$/;
+// Discord's documented default-user-avatar CDN asset (index 0).
+const defaultAvatarUrl = 'https://cdn.discordapp.com/embed/avatars/0.png';
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.css', ['app.css', 'text/css; charset=utf-8']],
@@ -65,7 +67,7 @@ export function createUserResolver(client, { ttlMs = 60000, concurrency = 5 } = 
 }
 
 function userObject(id, user, member) {
-  return { id, username: user?.username || id, displayName: member?.displayName || user?.globalName || user?.username || id, avatarUrl: user?.displayAvatarURL?.({ size: 64 }) || null };
+  return { id, username: user?.username || id, displayName: member?.displayName || user?.globalName || user?.username || id, avatarUrl: user?.displayAvatarURL?.({ size: 64 }) || defaultAvatarUrl };
 }
 export function tokenMatches(supplied, secret) {
   return typeof supplied === 'string' && timingSafeEqual(createHash('sha256').update(secret).digest(), createHash('sha256').update(supplied).digest());
@@ -243,6 +245,15 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           json(response, 200, { name: role?.name || id });
         } else json(response, 200, { user: await resolveUser(id) });
         return;
+      }
+      if (pathname === '/api/members' && request.method === 'GET') {
+        const guildId = params.get('guildId'), query = params.get('query')?.trim();
+        const guild = client?.guilds?.cache?.get(guildId);
+        if (!isSnowflake(guildId) || !guild || !query || query.length > 64 || (!isSnowflake(query) && query.length < 2)) throw new RangeError('Invalid member search.');
+        const members = isSnowflake(query)
+          ? [await guild.members.fetch(query).catch(() => null)].filter(Boolean)
+          : [...(await guild.members.search({ query, limit: 10 })).values()];
+        json(response, 200, { members: members.map(member => userObject(member.id, member.user, member)) }); return;
       }
       const userMatch = /^\/api\/users\/(\d{17,20})$/.exec(pathname);
       if (userMatch && request.method === 'POST') {

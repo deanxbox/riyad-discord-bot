@@ -25,10 +25,11 @@ export const scoreboardCommand = {
       return;
     }
 
-    await guild.members.fetch();
-
+    await interaction.deferReply();
+    const members = await Promise.all(rows.map(async row =>
+      guild.members.cache.get(row.user_id) ?? await guild.members.fetch(row.user_id).catch(() => null)));
     const lines = rows.map((row, i) => {
-      const member = guild.members.cache.get(row.user_id);
+      const member = members[i];
       const name = member?.displayName ?? `<@${row.user_id}>`;
       const medal = MEDALS[i] ?? `**${i + 1}.**`;
       const pts = row.score === 1 ? '1 pt' : `${row.score} pts`;
@@ -42,6 +43,6 @@ export const scoreboardCommand = {
       .setFooter({ text: 'Play trivia with /trivia' })
       .setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   },
 };

@@ -306,7 +306,7 @@ export class DataStore extends EventEmitter {
       SELECT user_id, score
       FROM trivia_scores
       WHERE guild_id = ?
-      ORDER BY score DESC
+      ORDER BY score DESC, user_id ASC
       LIMIT ?
     `);
   }
