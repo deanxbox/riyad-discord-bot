@@ -46,6 +46,7 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 ## Commands
 
 - `/download <user> [message_count]` starts a cancellable download job that uses Discord's guild search API to fetch that user's messages directly. The progress reply is ephemeral, so only the person who ran the command can see it.
+- Archives, replies, trivia, and exports remain text-only. Messages without text but with attachments, stickers, or embeds increment a per-user skipped counter instead of storing media, URLs, or placeholders. A completed re-download replaces the historic skipped count.
 - `/download-status [user]` shows active download jobs, or the specific status for one user.
 - `/download-cancel <user>` cancels an active download for a user.
 - `/download-refresh-all [message_count]` refreshes every tracked user sequentially.
@@ -74,12 +75,23 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 
 Set `WEB_DASHBOARD_ENABLED=true` and a long, random `WEB_DASHBOARD_TOKEN` in `.env`, then restart.
 The dashboard listens on `127.0.0.1:8787` by default (`WEB_DASHBOARD_HOST`/`WEB_DASHBOARD_PORT` to change).
-Open it locally, enter the token, and manage tracked/nerded users, per-user and global reply chance,
-reaction chance, always-reply user ID and nerd emoji. It also shows active downloads,
-the next-reply queue and a guild's trivia scores (use Refresh status for current data),
-and downloads a consistent SQLite backup.
-The token is kept in browser memory only; neither it nor `DISCORD_TOKEN` is returned by an API.
-Changes to the always-reply ID and emoji persist as SQLite overrides; Reset restores the `.env` default.
-Global reply chance already persists in SQLite and takes precedence over `DEFAULT_REPLY_CHANCE_PERCENT`
-after its first initialization. Do not expose the dashboard directly on a public network:
-HTTP is unencrypted; use a private tunnel or authenticated HTTPS reverse proxy for remote access.
+Open it locally and enter the token. The dashboard has Overview, Users, Downloads, Config,
+Trivia, and Queue tabs. Users supports search, sorting, tracked/nerded flags, reply overrides,
+stored-message deletion, random-line viewing, export, and re-download. Downloads can start one
+user or sequentially refresh all tracked users. Discord names and avatars are resolved live when
+available; unresolved identities fall back to their IDs.
+
+Config edits only runtime-safe settings: reply/reaction chances, always-reply user, nerd emoji,
+special admin user/role, and guild. These overrides persist in SQLite. Tokens, bind address/port,
+dashboard enablement, and database paths remain environment-only. Logging in creates an HttpOnly,
+SameSite=Strict session cookie (12-hour sliding expiry); reloads stay logged in, and the sidebar
+Log out button revokes the session. Sessions are in memory and reset when the bot restarts;
+use signed cookies or a persistent store if sessions must survive restarts or multiple processes.
+Browser requests that change state include a custom CSRF header and, when present, a same-host Origin check;
+Bearer authentication remains available for scripts. The token is not stored in browser storage
+or cookies and is never returned by APIs. Live dashboard data uses Server-Sent Events for downloads,
+users, settings, trivia and the next-reply queue, with a slow download polling fallback while disconnected.
+The dashboard binds to `127.0.0.1` by default and
+uses same-origin static assets, a restrictive CSP, and no-store API responses. Do not expose it
+directly on a public network: HTTP is unencrypted; use a private tunnel or authenticated HTTPS
+reverse proxy for remote access.

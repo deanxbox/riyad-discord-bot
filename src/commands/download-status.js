@@ -24,7 +24,7 @@ export const downloadStatusCommand = {
 
       await interaction.reply({
         content: activeJobs.length
-          ? `**Active downloads:**\n${activeJobs.map((job) => `<@${job.targetUserId}>: ${job.status}, ${job.downloadedCount} messages`).join('\n')}`
+          ? `**Active downloads:**\n${activeJobs.map((job) => `<@${job.targetUserId}>: ${job.status}, ${job.downloadedCount} text messages stored, ${job.mediaSkipped} media-only skipped`).join('\n')}`
           : 'No active download jobs.',
         ephemeral: true,
       });

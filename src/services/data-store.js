@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 
 const TRIVIA_LIFETIME_MS = 10 * 60 * 1000;
@@ -12,13 +13,14 @@ export function isTriviaExpired(question, now = Date.now()) {
   return now - Date.parse(question.created_at) > TRIVIA_LIFETIME_MS;
 }
 
-export class DataStore {
+export class DataStore extends EventEmitter {
   constructor(dbPath, {
     defaultReplyChancePercent = 4,
     reactionChanceDenominator = 6,
     alwaysReplyUserId = '256876746861707264',
     nerdEmoji = '🤓',
   } = {}) {
+    super();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     this.db = new DatabaseSync(dbPath);
@@ -54,6 +56,7 @@ export class DataStore {
         nerded INTEGER NOT NULL DEFAULT 0,
         reply_chance_override INTEGER,
         message_count INTEGER NOT NULL DEFAULT 0,
+        media_skipped INTEGER NOT NULL DEFAULT 0,
         last_downloaded_at TEXT,
         updated_at TEXT NOT NULL
       );
@@ -109,6 +112,7 @@ export class DataStore {
 
   runMigrations() {
     this.addColumnIfMissing('user_settings', 'reply_chance_override', 'INTEGER');
+    this.addColumnIfMissing('user_settings', 'media_skipped', 'INTEGER NOT NULL DEFAULT 0');
   }
 
   prepareStatements() {
@@ -119,12 +123,12 @@ export class DataStore {
     `);
 
     this.userSettingsStmt = this.db.prepare(`
-      SELECT user_id, tracked, nerded, reply_chance_override, message_count, last_downloaded_at, updated_at
+      SELECT user_id, tracked, nerded, reply_chance_override, message_count, media_skipped, last_downloaded_at, updated_at
       FROM user_settings
     `);
 
     this.userSummaryStmt = this.db.prepare(`
-      SELECT user_id, tracked, nerded, reply_chance_override, message_count, last_downloaded_at, updated_at
+      SELECT user_id, tracked, nerded, reply_chance_override, message_count, media_skipped, last_downloaded_at, updated_at
       FROM user_settings
       WHERE user_id = ?
     `);
@@ -164,6 +168,18 @@ export class DataStore {
     this.updateMessageCountStmt = this.db.prepare(`
       UPDATE user_settings
       SET message_count = ?, updated_at = ?, last_downloaded_at = COALESCE(?, last_downloaded_at)
+      WHERE user_id = ?
+    `);
+
+    this.incrementMediaSkippedStmt = this.db.prepare(`
+      UPDATE user_settings
+      SET media_skipped = media_skipped + 1, updated_at = ?
+      WHERE user_id = ?
+    `);
+
+    this.replaceMediaSkippedStmt = this.db.prepare(`
+      UPDATE user_settings
+      SET media_skipped = ?
       WHERE user_id = ?
     `);
 
@@ -254,6 +270,11 @@ export class DataStore {
     this.totalStoredMessagesStmt = this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM user_messages
+    `);
+
+    this.totalMediaSkippedStmt = this.db.prepare(`
+      SELECT COALESCE(SUM(media_skipped), 0) AS count
+      FROM user_settings
     `);
 
     this.insertTriviaActiveStmt = this.db.prepare(`
@@ -355,6 +376,22 @@ export class DataStore {
 
   setMetadata(key, value) {
     this.upsertMetadataStmt.run(key, value);
+    if (['reply_chance_percent', 'reaction_chance_denominator', 'always_reply_user_id', 'nerd_emoji'].includes(key) || key.startsWith('dashboard_')) this.emit('change', { type: 'config', key });
+  }
+
+  getDashboardSetting(key, fallback) {
+    const value = this.getMetadata(`dashboard_${key}`);
+    if (key === 'guildId' && value === 'null') return null;
+    return value ?? fallback;
+  }
+
+  setDashboardSetting(key, value) {
+    if (!['specialUserId', 'specialRoleId', 'guildId'].includes(key) ||
+        !(key === 'guildId' && value === null) && (typeof value !== 'string' || !/^\d{17,20}$/.test(value))) {
+      throw new RangeError('Invalid dashboard setting.');
+    }
+    this.setMetadata(`dashboard_${key}`, value === null ? 'null' : value);
+    return value;
   }
 
   ensureReplyChanceMetadata(defaultReplyChancePercent) {
@@ -405,6 +442,7 @@ export class DataStore {
     }
     if (value === null) {
       this.deleteMetadataStmt.run('always_reply_user_id');
+      this.emit('change', { type: 'config', key: 'always_reply_user_id' });
     } else {
       this.setMetadata('always_reply_user_id', value);
     }
@@ -421,6 +459,7 @@ export class DataStore {
     }
     if (value === null) {
       this.deleteMetadataStmt.run('nerd_emoji');
+      this.emit('change', { type: 'config', key: 'nerd_emoji' });
     } else {
       this.setMetadata('nerd_emoji', value.trim());
     }
@@ -457,12 +496,17 @@ export class DataStore {
       this.ensureUser(normalizedUserId);
       this.updateReplyChanceOverrideStmt.run(normalizedPercent, nowIso(), normalizedUserId);
     });
+    this.emit('change', { type: 'user', userId: normalizedUserId });
 
     return normalizedPercent;
   }
 
   listTrackedUsers() {
     return [...this.trackedUsers].sort();
+  }
+
+  listUserIds() {
+    return this.userSettingsStmt.all().map((row) => String(row.user_id)).sort();
   }
 
   listNerdedUsers() {
@@ -481,6 +525,10 @@ export class DataStore {
     return Number(this.totalStoredMessagesStmt.get()?.count || 0);
   }
 
+  getTotalMediaSkipped() {
+    return Number(this.totalMediaSkippedStmt.get()?.count || 0);
+  }
+
   getUserSummary(userId) {
     const normalizedUserId = String(userId);
     const row = this.userSummaryStmt.get(normalizedUserId);
@@ -493,6 +541,7 @@ export class DataStore {
         replyChanceOverride: null,
         effectiveReplyChancePercent: this.replyChancePercent,
         messageCount: 0,
+        mediaSkipped: 0,
         lastDownloadedAt: null,
         updatedAt: null,
       };
@@ -510,6 +559,7 @@ export class DataStore {
       replyChanceOverride,
       effectiveReplyChancePercent: replyChanceOverride === null ? this.replyChancePercent : replyChanceOverride,
       messageCount: Number(row.message_count) || 0,
+      mediaSkipped: Number(row.media_skipped) || 0,
       lastDownloadedAt: row.last_downloaded_at ?? null,
       updatedAt: row.updated_at ?? null,
     };
@@ -532,6 +582,7 @@ export class DataStore {
     if (!this.messageCounts.has(normalizedUserId)) {
       this.messageCounts.set(normalizedUserId, 0);
     }
+    this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 
   setNerded(userId, nerded) {
@@ -551,6 +602,7 @@ export class DataStore {
     if (!this.messageCounts.has(normalizedUserId)) {
       this.messageCounts.set(normalizedUserId, 0);
     }
+    this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 
   startUserDownload(userId) {
@@ -565,6 +617,7 @@ export class DataStore {
 
     this.trackedUsers.add(normalizedUserId);
     this.messageCounts.set(normalizedUserId, 0);
+    this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 
   beginStagedUserDownload(jobId, userId) {
@@ -611,7 +664,7 @@ export class DataStore {
     return Number(this.countStagingMessagesStmt.get(String(jobId))?.count || 0);
   }
 
-  commitStagedUserDownload(jobId, userId) {
+  commitStagedUserDownload(jobId, userId, mediaSkipped = 0) {
     const normalizedJobId = String(jobId);
     const normalizedUserId = String(userId);
     const nextCount = this.getStagedDownloadCount(normalizedJobId);
@@ -622,11 +675,13 @@ export class DataStore {
       this.promoteStagingMessagesStmt.run(normalizedJobId);
       this.updateTrackedStmt.run(1, nowIso(), normalizedUserId);
       this.updateMessageCountStmt.run(nextCount, nowIso(), nowIso(), normalizedUserId);
+      this.replaceMediaSkippedStmt.run(mediaSkipped, normalizedUserId);
       this.deleteStagingMessagesStmt.run(normalizedJobId);
     });
 
     this.trackedUsers.add(normalizedUserId);
     this.messageCounts.set(normalizedUserId, nextCount);
+    this.emit('change', { type: 'user', userId: normalizedUserId });
 
     return nextCount;
   }
@@ -664,6 +719,7 @@ export class DataStore {
       const nextCount = this.getMessageCount(normalizedUserId) + insertedCount;
       this.messageCounts.set(normalizedUserId, nextCount);
       this.updateMessageCountStmt.run(nextCount, nowIso(), null, normalizedUserId);
+      this.emit('change', { type: 'user', userId: normalizedUserId });
     }
   }
 
@@ -676,6 +732,7 @@ export class DataStore {
       nowIso(),
       normalizedUserId,
     );
+    this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 
   deleteUserData(userId) {
@@ -690,6 +747,18 @@ export class DataStore {
 
     this.trackedUsers.delete(normalizedUserId);
     this.messageCounts.set(normalizedUserId, 0);
+    this.emit('change', { type: 'user', userId: normalizedUserId });
+  }
+
+  deleteStoredMessages(userId) {
+    const normalizedUserId = String(userId);
+    this.transaction(() => {
+      this.ensureUser(normalizedUserId);
+      this.deleteUserMessagesStmt.run(normalizedUserId);
+      this.updateMessageCountStmt.run(0, nowIso(), null, normalizedUserId);
+    });
+    this.messageCounts.set(normalizedUserId, 0);
+    this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 
   appendLiveMessage(message) {
@@ -710,7 +779,15 @@ export class DataStore {
       const nextCount = this.getMessageCount(normalizedUserId) + 1;
       this.messageCounts.set(normalizedUserId, nextCount);
       this.updateMessageCountStmt.run(nextCount, nowIso(), null, normalizedUserId);
+      this.emit('change', { type: 'user', userId: normalizedUserId });
     }
+  }
+
+  incrementMediaSkipped(userId) {
+    const normalizedUserId = String(userId);
+    this.ensureUser(normalizedUserId);
+    this.incrementMediaSkippedStmt.run(nowIso(), normalizedUserId);
+    this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 
   getRandomMessage(userId) {
@@ -733,6 +810,7 @@ export class DataStore {
       JSON.stringify(optionUserIds.map(String)),
       nowIso(),
     );
+    this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
 
   getActiveTriviaQuestion(guildId) {
@@ -741,6 +819,7 @@ export class DataStore {
 
   clearActiveTriviaQuestion(guildId) {
     this.deleteTriviaActiveStmt.run(String(guildId));
+    this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
 
   // Atomically registers a user's answer attempt.
@@ -749,12 +828,12 @@ export class DataStore {
     const normalizedGuildId = String(guildId);
     const normalizedUserId = String(userId);
 
-    return this.transaction(() => {
+    const result = this.transaction(() => {
       const question = this.selectTriviaActiveStmt.get(normalizedGuildId);
       if (!question) return { status: 'no_question' };
       if (isTriviaExpired(question)) {
         this.deleteTriviaActiveStmt.run(normalizedGuildId);
-        return { status: 'no_question' };
+        return { status: 'no_question', expired: true };
       }
 
       const answeredIds = JSON.parse(question.answered_user_ids);
@@ -765,10 +844,14 @@ export class DataStore {
 
       return { status: 'ok', question };
     });
+    if (result.expired || result.status === 'ok') this.emit('change', { type: 'trivia', guildId: normalizedGuildId });
+    if (result.expired) return { status: 'no_question' };
+    return result;
   }
 
   triviaIncrementScore(userId, guildId) {
     this.upsertTriviaScoreStmt.run(String(userId), String(guildId));
+    this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
 
   triviaGetLeaderboard(guildId, limit = 10) {

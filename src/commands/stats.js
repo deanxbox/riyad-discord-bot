@@ -38,6 +38,7 @@ export const statsCommand = {
         { name: 'Memory', value: `${memoryMb} MB`, inline: true },
         { name: 'Tracked Users', value: String(store.getTrackedUsersCount()), inline: true },
         { name: 'Stored Messages', value: String(store.getTotalStoredMessages()), inline: true },
+        { name: 'Media-only Skipped', value: String(store.getTotalMediaSkipped()), inline: true },
         { name: 'Active Downloads', value: String(downloadJobs.getActiveJobCount()), inline: true },
         { name: 'Queued Next Replies', value: String(nextReplyQueue.size()), inline: true },
         { name: 'Voice Connections', value: String(getVoiceConnections().size), inline: true },

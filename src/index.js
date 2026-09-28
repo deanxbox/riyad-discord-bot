@@ -17,6 +17,9 @@ const store = new DataStore(config.dbPath, {
 });
 config.alwaysReplyUserId = store.getAlwaysReplyUserId();
 config.nerdEmoji = store.getNerdEmoji();
+for (const key of ['specialUserId', 'specialRoleId', 'guildId']) {
+  config[key] = store.getDashboardSetting(key, config[key]);
+}
 
 const client = new Client({
   intents: [
@@ -33,7 +36,7 @@ const nextReplyQueue = new NextReplyQueue();
 const voiceManager = new VoiceManager(client);
 const context = { client, config, store, downloadJobs, nextReplyQueue, voiceManager };
 const webDashboard = config.webDashboardEnabled
-  ? startWebDashboard({ config, store, downloadJobs, nextReplyQueue })
+  ? startWebDashboard({ config, store, downloadJobs, nextReplyQueue, client })
   : null;
 
 client.once(Events.ClientReady, async () => {

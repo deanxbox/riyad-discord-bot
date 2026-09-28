@@ -21,15 +21,19 @@ export async function handleMessageCreate(message, { store, config, nextReplyQue
     return;
   }
 
-  if (tracked && message.content.trim().length > 0) {
-    store.appendLiveMessage({
-      messageId: message.id,
-      userId,
-      guildId: message.guildId,
-      channelId: message.channelId,
-      content: message.content,
-      createdAt: message.createdAt.toISOString(),
-    });
+  if (tracked) {
+    if (message.content.trim().length > 0) {
+      store.appendLiveMessage({
+        messageId: message.id,
+        userId,
+        guildId: message.guildId,
+        channelId: message.channelId,
+        content: message.content,
+        createdAt: message.createdAt.toISOString(),
+      });
+    } else if (message.attachments.size || message.stickers.size || message.embeds.length) {
+      store.incrementMediaSkipped(userId);
+    }
   }
 
   if (nerded) {

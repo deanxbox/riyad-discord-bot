@@ -1,250 +1,347 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const page = `<!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Riyad dashboard</title>
-<style>
-body{font:16px system-ui,sans-serif;max-width:850px;margin:2rem auto;padding:0 1rem;background:#151821;color:#f5f5fa}
-input,button{font:inherit;padding:.45rem;margin:.25rem;background:#282e3c;color:inherit;border:1px solid #70788c;border-radius:5px}
-button{cursor:pointer}button:hover{background:#3c465c}section{padding:1rem;margin:1rem 0;background:#222837;border-radius:8px}
-label{display:inline-block;margin:.3rem}li{margin:.5rem 0}#error{color:#ffaaa7;white-space:pre-wrap}
-</style>
-<h1>Riyad dashboard</h1>
-<label>Dashboard token <input id="token" type="password" autocomplete="off"></label>
-<button id="connect">Connect</button><p id="error" role="alert"></p>
-<main hidden><button id="refresh">Refresh status</button>
-<section><h2>Global settings</h2>
-<label>Default reply chance (%) <input id="reply" type="number" min="0" max="100"></label><button data-setting="replyChancePercent" data-input="reply">Save</button><br>
-<label>Reaction chance (1 in N) <input id="reaction" type="number" min="1" max="1000000"></label><button data-setting="reactionChanceDenominator" data-input="reaction">Save</button><br>
-<label>Always-reply user ID <input id="always" inputmode="numeric"></label><button data-setting="alwaysReplyUserId" data-input="always">Save</button><button data-setting="alwaysReplyUserId" data-reset="true">Reset to .env</button><br>
-<label>Nerd emoji <input id="emoji"></label><button data-setting="nerdEmoji" data-input="emoji">Save</button><button data-setting="nerdEmoji" data-reset="true">Reset to .env</button>
-<p>Saved settings persist in SQLite; reset restores the configured environment default.</p></section>
-<section><h2>Users</h2><label>User ID <input id="userId" inputmode="numeric"></label><button id="lookup">Find user</button><ul id="users"></ul></section>
-<section><h2>Active downloads</h2><ul id="jobs"></ul></section>
-<section><h2>Next replies</h2><ul id="queue"></ul></section>
-<section><h2>Trivia leaderboard</h2><label>Guild ID <input id="guildId" inputmode="numeric"></label><button id="leaderboard">Load</button><ol id="scores"></ol></section>
-<section><h2>Database backup</h2><button id="backup">Download SQLite snapshot</button></section>
-</main>
-<script>
-let token = '';
-const $ = id => document.getElementById(id);
-const text = (tag, value) => { const el = document.createElement(tag); el.textContent = value; return el; };
-async function api(route, options = {}) {
-  const response = await fetch(route, {
-    ...options,
-    headers: { Authorization: 'Bearer ' + token, ...(options.body ? { 'Content-Type': 'application/json' } : {}) },
-  });
-  if (!response.ok) throw new Error((await response.text()).slice(0, 200));
-  return response;
+const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
+const snowflake = /^\d{17,20}$/;
+const staticFiles = new Map([
+  ['/', ['index.html', 'text/html; charset=utf-8']],
+  ['/app.css', ['app.css', 'text/css; charset=utf-8']],
+  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+]);
+const SESSION_MS = 12 * 60 * 60 * 1000;
+
+export function isSnowflake(value) { return typeof value === 'string' && snowflake.test(value); }
+export function isStaticPathSafe(value) { return staticFiles.has(value); }
+export function validateSetting(key, value) {
+  if (key === 'replyChancePercent' && Number.isInteger(value) && value >= 0 && value <= 100) return value;
+  if (key === 'reactionChanceDenominator' && Number.isInteger(value) && value >= 1 && value <= 1000000) return value;
+  if (['alwaysReplyUserId', 'specialUserId', 'specialRoleId'].includes(key) && isSnowflake(value)) return value;
+  if (key === 'guildId' && (value === null || isSnowflake(value))) return value;
+  if (key === 'nerdEmoji' && typeof value === 'string' && value.trim() && value.length <= 100) return value.trim();
+  throw new RangeError('Invalid setting value.');
 }
-async function refresh() {
-  const state = await (await api('/api/state?guildId=' + encodeURIComponent($('guildId').value) +
-    '&userId=' + encodeURIComponent($('userId').value))).json();
-  $('reply').value = state.replyChancePercent;
-  $('reaction').value = state.reactionChanceDenominator;
-  $('always').value = state.alwaysReplyUserId;
-  $('emoji').value = state.nerdEmoji;
-  const users = $('users'); users.replaceChildren();
-  for (const user of state.users) {
-    const li = text('li', user.userId + ' (' + user.messageCount + ' messages) ');
-    for (const key of ['tracked', 'nerded']) {
-      const button = text('button', key + ': ' + (user[key] ? 'on' : 'off'));
-      button.onclick = () => run(async () => {
-        await api('/api/users/' + user.userId, { method: 'POST', body: JSON.stringify({ [key]: !user[key] }) });
-        await refresh();
-      });
-      li.append(button);
+
+export function createUserResolver(client, { ttlMs = 60000, concurrency = 5 } = {}) {
+  const cache = new Map(), pending = new Map(), queue = [];
+  let active = 0;
+  const drain = () => {
+    while (active < concurrency && queue.length) {
+      const task = queue.shift(); active++;
+      Promise.resolve().then(task.run).finally(() => { active--; drain(); });
     }
-    const chance = document.createElement('input');
-    chance.type = 'number'; chance.min = '0'; chance.max = '100';
-    chance.placeholder = 'inherit'; chance.title = 'Reply chance; blank to inherit';
-    chance.value = user.replyChanceOverride ?? '';
-    const save = text('button', 'Save chance');
-    save.onclick = () => run(async () => {
-      await api('/api/users/' + user.userId, { method: 'POST', body: JSON.stringify({ replyChanceOverride: chance.value === '' ? null : Number(chance.value) }) });
-      await refresh();
+  };
+  const resolve = async id => {
+    const cached = client.users.cache.get(id);
+    const member = [...client.guilds.cache.values()].map(g => g.members.cache.get(id)).find(Boolean);
+    const hit = cached || member?.user;
+    if (hit) return userObject(id, hit, member);
+    const prior = cache.get(id);
+    if (prior && prior.expires > Date.now()) return prior.value;
+    if (pending.has(id)) return pending.get(id);
+    const promise = new Promise(resolvePromise => {
+      queue.push({ run: async () => {
+        try {
+          const user = await client.users.fetch(id);
+          const value = userObject(id, user);
+          cache.set(id, { value, expires: Date.now() + ttlMs }); resolvePromise(value);
+        } catch {
+          const value = userObject(id);
+          cache.set(id, { value, expires: Date.now() + ttlMs });
+          resolvePromise(value);
+        }
+        finally { pending.delete(id); }
+      } });
+      drain();
     });
-    li.append(chance, save); users.append(li);
-  }
-  for (const [id, rows, format] of [
-    ['jobs', state.jobs, j => j.targetUserId + ': ' + j.status + ' (' + j.downloadedCount + ' downloaded)'],
-    ['queue', state.queue, q => (q.targetUserId || 'any user') + ': ' + q.message],
-    ['scores', state.leaderboard, s => s.user_id + ': ' + s.score],
-  ]) $(id).replaceChildren(...rows.map(row => text('li', format(row))));
-  $('error').textContent = '';
-}
-async function run(task) { try { await task(); } catch (error) { $('error').textContent = error.message; } }
-$('connect').onclick = () => run(async () => {
-  token = $('token').value; $('token').value = '';
-  await refresh(); document.querySelector('main').hidden = false;
-});
-$('lookup').onclick = () => run(async () => {
-  const id = $('userId').value;
-  if (!/^\\d{17,20}$/.test(id)) throw new Error('Enter a valid Discord user ID.');
-  await refresh();
-});
-$('leaderboard').onclick = () => run(refresh);
-// ponytail: manual refresh; add polling if live job progress becomes necessary.
-$('refresh').onclick = () => run(refresh);
-document.querySelectorAll('[data-setting]').forEach(button => button.onclick = () => run(async () => {
-  const value = button.dataset.reset ? null : $(button.dataset.input).value;
-  await api('/api/settings', { method: 'POST', body: JSON.stringify({ [button.dataset.setting]: value }) });
-  await refresh();
-}));
-$('backup').onclick = () => run(async () => {
-  const blob = await (await api('/api/backup')).blob();
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a'); link.href = url; link.download = 'bot-backup.sqlite'; link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-});
-</script></html>`;
-
-function authorized(request, secret) {
-  const supplied = request.headers.authorization;
-  if (typeof supplied !== 'string' || !supplied.startsWith('Bearer ')) return false;
-  const expected = createHash('sha256').update(secret).digest();
-  const received = createHash('sha256').update(supplied.slice(7)).digest();
-  return timingSafeEqual(expected, received);
+    pending.set(id, promise);
+    return promise;
+  };
+  return resolve;
 }
 
+function userObject(id, user, member) {
+  return { id, username: user?.username || id, displayName: member?.displayName || user?.globalName || user?.username || id, avatarUrl: user?.displayAvatarURL?.({ size: 64 }) || null };
+}
+export function tokenMatches(supplied, secret) {
+  return typeof supplied === 'string' && timingSafeEqual(createHash('sha256').update(secret).digest(), createHash('sha256').update(supplied).digest());
+}
+export function createSessionStore(now = Date.now) {
+  // ponytail: sessions die on restart; use signed cookies or a persistent store if multi-process continuity is needed.
+  const sessions = new Map();
+  return {
+    sessions,
+    create() { const id = randomBytes(32).toString('hex'); sessions.set(id, now() + SESSION_MS); return id; },
+    use(id) {
+      if (!id || !sessions.has(id)) return false;
+      if (sessions.get(id) <= now()) { sessions.delete(id); return false; }
+      sessions.set(id, now() + SESSION_MS);
+      return true;
+    },
+    valid(id) { return Boolean(id && sessions.has(id) && sessions.get(id) > now()); },
+    destroy(id) { sessions.delete(id); },
+    prune() { for (const [id, expires] of sessions) if (expires <= now()) sessions.delete(id); },
+  };
+}
+export function sessionCookie(request, id = '', maxAge = 43200) {
+  return `sid=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${request.socket.encrypted || request.headers['x-forwarded-proto']?.split(',')[0].trim().toLowerCase() === 'https' ? '; Secure' : ''}`;
+}
+export function csrfAllowed(request) {
+  if (request.headers['x-requested-with'] !== 'dashboard') return false;
+  if (!request.headers.origin) return true;
+  try { return new URL(request.headers.origin).host === request.headers.host; }
+  catch { return false; }
+}
+export function createLoginLimiter(now = Date.now) {
+  const attempts = new Map();
+  return {
+    blocked(ip) { const entry = attempts.get(ip); return entry?.count >= 3 && entry.until > now(); },
+    fail(ip) {
+      const prior = attempts.get(ip);
+      const count = prior && prior.until > now() ? prior.count + 1 : 1;
+      attempts.set(ip, { count, until: now() + (count >= 3 ? 30000 : 60000) });
+    },
+    clear(ip) { attempts.delete(ip); },
+    prune() { for (const [ip, entry] of attempts) if (entry.until <= now()) attempts.delete(ip); },
+  };
+}
 function json(response, status, data) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(data));
 }
-
 async function readBody(request) {
-  const chunks = [];
-  let bytes = 0;
+  const chunks = []; let bytes = 0;
   for await (const chunk of request) {
     bytes += chunk.length;
-    if (bytes > 4096) throw new RangeError('Request body too large.');
+    if (bytes > 65536) throw Object.assign(new RangeError('Request body too large.'), { statusCode: 413 });
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw Object.assign(new SyntaxError('Invalid JSON.'), { statusCode: 400 }); }
 }
+const resolved = async (resolve, id) => id ? resolve(String(id)) : null;
 
-export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue }) {
-  if (!config.webDashboardToken) {
-    throw new Error('WEB_DASHBOARD_TOKEN is required when WEB_DASHBOARD_ENABLED=true.');
-  }
-  if (!Number.isInteger(config.webDashboardPort) || config.webDashboardPort < 0 || config.webDashboardPort > 65535) {
-    throw new RangeError('WEB_DASHBOARD_PORT must be a valid TCP port.');
-  }
-
+export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue, client }) {
+  if (!config.webDashboardToken) throw new Error('WEB_DASHBOARD_TOKEN is required when WEB_DASHBOARD_ENABLED=true.');
+  if (!Number.isInteger(config.webDashboardPort) || config.webDashboardPort < 0 || config.webDashboardPort > 65535) throw new RangeError('WEB_DASHBOARD_PORT must be a valid TCP port.');
+  const resolveUser = createUserResolver(client || { users: { cache: new Map(), fetch: async () => { throw Error(); } }, guilds: { cache: new Map() } });
+  const started = Date.now();
+  const sessions = createSessionStore(), limiter = createLoginLimiter(), streams = new Set();
+  const publish = (event, data) => {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const stream of streams) if (!stream.write(payload)) stream.end();
+  };
+  const onStoreChange = change => publish(change.type, change);
+  const onQueueChange = change => publish('queue', change);
+  const onJobChange = change => publish('download', change);
+  store.on?.('change', onStoreChange);
+  nextReplyQueue?.on?.('change', onQueueChange);
+  downloadJobs?.on?.('change', onJobChange);
+  const heartbeat = setInterval(() => {
+    for (const stream of streams) {
+      if (stream.dashboardSession && !sessions.valid(stream.dashboardSession)) { stream.end(); continue; }
+      stream.write(': heartbeat\n\n');
+    }
+  }, 25000);
+  heartbeat.unref();
+  const stats = setInterval(() => {
+    if (streams.size) publish('stats', { uptime: Math.floor((Date.now() - started) / 1000), ping: client?.ws?.ping ?? null, tracked: store.getTrackedUsersCount(), storedMessages: store.getTotalStoredMessages(), mediaSkipped: store.getTotalMediaSkipped(), activeDownloads: downloadJobs.getActiveJobs().length });
+  }, 5000);
+  stats.unref();
+  const pruning = setInterval(() => { sessions.prune(); limiter.prune(); }, 60000);
+  pruning.unref();
   const server = createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
-    response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
+    response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://cdn.discordapp.com https://media.discordapp.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     const pathname = new URL(request.url, 'http://localhost').pathname;
-    if (pathname === '/' && request.method === 'GET') {
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      response.end(page);
+    if (request.method === 'GET' && isStaticPathSafe(pathname)) {
+      try {
+        const [name, type] = staticFiles.get(pathname);
+        response.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
+        fs.createReadStream(path.join(publicDir, name)).pipe(response);
+      } catch { json(response, 404, { error: 'Not found' }); }
       return;
     }
     if (!pathname.startsWith('/api/')) { json(response, 404, { error: 'Not found' }); return; }
-    if (!authorized(request, config.webDashboardToken)) { json(response, 401, { error: 'Unauthorized' }); return; }
-
     try {
+      const sid = /(?:^|;\s*)sid=([a-f0-9]{64})(?:;|$)/.exec(request.headers.cookie || '')?.[1];
+      const cookieAuth = sessions.use(sid);
+      const bearer = request.headers.authorization;
+      const bearerAuth = typeof bearer === 'string' && bearer.startsWith('Bearer ') && tokenMatches(bearer.slice(7), config.webDashboardToken);
+      if (pathname === '/api/login' && request.method === 'POST') {
+        if (!csrfAllowed(request)) { json(response, 403, { error: 'Forbidden' }); return; }
+        const ip = request.socket.remoteAddress || 'unknown';
+        if (limiter.blocked(ip)) { json(response, 429, { error: 'Too many login attempts.' }); return; }
+        const body = await readBody(request);
+        if (!tokenMatches(body?.token, config.webDashboardToken)) {
+          limiter.fail(ip);
+          json(response, 401, { error: 'Invalid token.' }); return;
+        }
+        limiter.clear(ip);
+        if (sid) sessions.destroy(sid);
+        response.setHeader('Set-Cookie', sessionCookie(request, sessions.create()));
+        json(response, 200, { ok: true }); return;
+      }
+      if (!cookieAuth && !bearerAuth) { json(response, 401, { error: 'Unauthorized' }); return; }
+      if (cookieAuth) response.setHeader('Set-Cookie', sessionCookie(request, sid));
+      if (['POST', 'PUT', 'DELETE'].includes(request.method) && cookieAuth && !csrfAllowed(request)) { json(response, 403, { error: 'Forbidden' }); return; }
+      if (pathname === '/api/session' && request.method === 'GET') { json(response, 200, { ok: true }); return; }
+      if (pathname === '/api/logout' && request.method === 'POST') {
+        if (sid) sessions.destroy(sid);
+        for (const stream of streams) if (stream.dashboardSession === sid && sid) stream.end();
+        response.setHeader('Set-Cookie', sessionCookie(request, '', 0));
+        json(response, 200, { ok: true }); return;
+      }
+      if (pathname === '/api/events' && request.method === 'GET') {
+        if (streams.size >= 20) { json(response, 503, { error: 'Too many live connections.' }); return; }
+        response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        response.dashboardSession = cookieAuth ? sid : null;
+        streams.add(response);
+        response.write('retry: 3000\n\n');
+        response.on('close', () => streams.delete(response));
+        return;
+      }
+      const params = new URL(request.url, 'http://localhost').searchParams;
       if (pathname === '/api/state' && request.method === 'GET') {
-        const params = new URL(request.url, 'http://localhost').searchParams;
         const guildId = params.get('guildId') || config.guildId;
-        const userIds = new Set([...store.listTrackedUsers(), ...store.listNerdedUsers()]);
-        const selectedUserId = params.get('userId');
-        if (selectedUserId && /^\d{17,20}$/.test(selectedUserId)) userIds.add(selectedUserId);
+        const ids = new Set(store.listUserIds());
+        if (isSnowflake(params.get('userId'))) ids.add(params.get('userId'));
+        const users = await Promise.all([...ids].map(async id => {
+          const { userId, ...summary } = store.getUserSummary(id);
+          return { ...summary, user: await resolveUser(id) };
+        }));
+        const jobs = await Promise.all(downloadJobs.getActiveJobs().map(async j => ({
+          id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById),
+          status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit,
+        })));
+        const queue = await Promise.all(nextReplyQueue.list().map(async ({ targetUserId, createdByUserId, ...q }) => ({
+          ...q, target: await resolved(resolveUser, targetUserId), createdBy: await resolveUser(createdByUserId),
+        })));
+        const leaderboard = guildId && isSnowflake(guildId) ? await Promise.all(store.triviaGetLeaderboard(guildId).map(async ({ user_id, ...row }) => ({ ...row, user: await resolveUser(user_id) }))) : [];
         json(response, 200, {
-          users: [...userIds].map(id => store.getUserSummary(id)),
-          replyChancePercent: store.getReplyChancePercent(),
-          reactionChanceDenominator: store.getReactionChanceDenominator(),
-          alwaysReplyUserId: config.alwaysReplyUserId,
-          nerdEmoji: config.nerdEmoji,
-          jobs: downloadJobs.getActiveJobs().map(({ targetUserId, guildId, status, downloadedCount, totalResults }) =>
-            ({ targetUserId, guildId, status, downloadedCount, totalResults })),
-          queue: nextReplyQueue.list(),
-          leaderboard: guildId && /^\d{17,20}$/.test(guildId) ? store.triviaGetLeaderboard(guildId) : [],
+          users, jobs, queue, leaderboard,
+          replyChancePercent: store.getReplyChancePercent(), reactionChanceDenominator: store.getReactionChanceDenominator(),
+          alwaysReplyUser: await resolveUser(config.alwaysReplyUserId), nerdEmoji: config.nerdEmoji,
+          specialUser: await resolveUser(config.specialUserId), specialRoleId: config.specialRoleId,
+          specialRole: [...(client?.guilds?.cache?.values?.() || [])].map(g => g.roles.cache.get(config.specialRoleId)).find(Boolean)?.name || config.specialRoleId,
+          guildId: config.guildId, guildName: client?.guilds?.cache?.get(config.guildId)?.name || config.guildId,
+          guilds: [...(client?.guilds?.cache?.values?.() || [])].map(g => ({ id: g.id, name: g.name })),
+          stats: { tracked: store.getTrackedUsersCount(), storedMessages: store.getTotalStoredMessages(), mediaSkipped: store.getTotalMediaSkipped(), activeDownloads: jobs.length, uptime: Math.floor((Date.now() - started) / 1000), ping: client?.ws?.ping ?? null },
         });
+        return;
+      }
+      if (pathname === '/api/resolve' && request.method === 'GET') {
+        const id = params.get('id');
+        if (!isSnowflake(id)) throw new RangeError('Invalid Discord ID.');
+        if (params.get('type') === 'role') {
+          const role = [...(client?.guilds?.cache?.values?.() || [])].map(g => g.roles.cache.get(id)).find(Boolean);
+          json(response, 200, { name: role?.name || id });
+        } else json(response, 200, { user: await resolveUser(id) });
         return;
       }
       const userMatch = /^\/api\/users\/(\d{17,20})$/.exec(pathname);
       if (userMatch && request.method === 'POST') {
         const data = await readBody(request);
-        if (!data || typeof data !== 'object' || Array.isArray(data) ||
-            Object.keys(data).some(k => !['tracked', 'nerded', 'replyChanceOverride'].includes(k)) ||
-            (data.tracked !== undefined && typeof data.tracked !== 'boolean') ||
-            (data.nerded !== undefined && typeof data.nerded !== 'boolean') ||
-            (data.replyChanceOverride !== undefined && data.replyChanceOverride !== null &&
-              (!Number.isInteger(data.replyChanceOverride) || data.replyChanceOverride < 0 || data.replyChanceOverride > 100))) {
-          throw new RangeError('Invalid user settings.');
-        }
+        if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(k => !['tracked', 'nerded', 'replyChanceOverride', 'deleteMessages'].includes(k)) ||
+          (data.tracked !== undefined && typeof data.tracked !== 'boolean') || (data.nerded !== undefined && typeof data.nerded !== 'boolean') ||
+          (data.replyChanceOverride !== undefined && data.replyChanceOverride !== null && (!Number.isInteger(data.replyChanceOverride) || data.replyChanceOverride < 0 || data.replyChanceOverride > 100)) ||
+          (data.deleteMessages !== undefined && data.deleteMessages !== true)) throw new RangeError('Invalid user settings.');
         const id = userMatch[1];
         if (data.tracked !== undefined) store.setTracked(id, data.tracked);
         if (data.nerded !== undefined) store.setNerded(id, data.nerded);
         if (data.replyChanceOverride !== undefined) store.setUserReplyChanceOverride(id, data.replyChanceOverride);
-        json(response, 200, store.getUserSummary(id));
-        return;
+        if (data.deleteMessages) store.deleteStoredMessages(id);
+        const { userId, ...summary } = store.getUserSummary(id);
+        json(response, 200, { ...summary, user: await resolveUser(id) }); return;
       }
       if (pathname === '/api/settings' && request.method === 'POST') {
         const data = await readBody(request);
-        if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).length !== 1) {
-          throw new RangeError('Supply one setting at a time.');
-        }
-        if ('replyChancePercent' in data) {
-          const value = data.replyChancePercent;
-          if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new RangeError('Percent must be 0–100.');
-          const percent = Number(value);
-          if (!Number.isInteger(percent) || percent > 100) throw new RangeError('Percent must be 0–100.');
-          store.setReplyChancePercent(percent);
-        } else if ('reactionChanceDenominator' in data) {
-          const value = data.reactionChanceDenominator;
-          if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new RangeError('Invalid denominator.');
-          store.setReactionChanceDenominator(Number(value));
-        } else if ('alwaysReplyUserId' in data) {
-          config.alwaysReplyUserId = store.setAlwaysReplyUserId(data.alwaysReplyUserId);
-        } else if ('nerdEmoji' in data) {
-          config.nerdEmoji = store.setNerdEmoji(data.nerdEmoji);
-        } else {
-          throw new RangeError('Unknown setting.');
-        }
-        json(response, 200, { ok: true });
-        return;
+        if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).length !== 1) throw new RangeError('Supply one setting at a time.');
+        const [key] = Object.keys(data), value = validateSetting(key, data[key]);
+        if (key === 'replyChancePercent') store.setReplyChancePercent(value);
+        else if (key === 'reactionChanceDenominator') store.setReactionChanceDenominator(value);
+        else if (key === 'alwaysReplyUserId') config.alwaysReplyUserId = store.setAlwaysReplyUserId(value);
+        else if (key === 'nerdEmoji') config.nerdEmoji = store.setNerdEmoji(value);
+        else if (key === 'specialUserId') config.specialUserId = store.setDashboardSetting(key, value);
+        else if (key === 'specialRoleId') config.specialRoleId = store.setDashboardSetting(key, value);
+        else if (key === 'guildId') config.guildId = store.setDashboardSetting(key, value);
+        json(response, 200, { ok: true }); return;
+      }
+      if (pathname === '/api/downloads' && request.method === 'GET') {
+        const jobs = await Promise.all(downloadJobs.getActiveJobs().map(async j => ({ id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById), status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit })));
+        json(response, 200, { jobs }); return;
+      }
+      if (pathname === '/api/downloads' && request.method === 'POST') {
+        const data = await readBody(request);
+        if (!data || !isSnowflake(data.userId) || !isSnowflake(data.guildId) || !(client?.guilds?.cache?.has(data.guildId)) ||
+          (data.limit !== null && data.limit !== undefined && (!Number.isSafeInteger(data.limit) || data.limit < 1))) throw new RangeError('Invalid download request.');
+        if (downloadJobs.getJobStatus(data.guildId, data.userId)) { json(response, 409, { error: 'A download is already active for this guild and user.' }); return; }
+        const result = downloadJobs.startHeadless({ guildId: data.guildId, requestedById: config.specialUserId, targetUserId: data.userId, limit: data.limit ?? null });
+        if (!result.created) { json(response, 409, { error: 'A download is already active for this guild and user.' }); return; }
+        json(response, 202, { ok: true }); return;
+      }
+      const cancel = /^\/api\/downloads\/(\d{17,20})\/(\d{17,20})$/.exec(pathname);
+      if (cancel && request.method === 'DELETE') {
+        const result = downloadJobs.cancelJob(cancel[1], cancel[2]);
+        if (!result.cancelled) { json(response, 404, { error: result.reason }); return; }
+        json(response, 200, { ok: true }); return;
+      }
+      const line = /^\/api\/users\/(\d{17,20})\/random$/.exec(pathname);
+      if (line && request.method === 'GET') { json(response, 200, { message: store.getRandomMessageWithMetadata(line[1]) }); return; }
+      const exportMatch = /^\/api\/users\/(\d{17,20})\/export$/.exec(pathname);
+      if (exportMatch && request.method === 'GET') {
+        const rows = store.exportUserMessages(exportMatch[1]);
+        response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${exportMatch[1]}.txt"`, 'Cache-Control': 'no-store' });
+        response.end(rows.map(row => `${row.created_at}\t${row.content}`).join('\n')); return;
+      }
+      if (pathname === '/api/refresh-all' && request.method === 'POST') {
+        const data = await readBody(request);
+        if (!isSnowflake(data.guildId) || !client?.guilds?.cache?.has(data.guildId) ||
+          (data.limit != null && (!Number.isSafeInteger(data.limit) || data.limit < 1))) throw new RangeError('Invalid refresh request.');
+        void (async () => {
+          for (const [i, userId] of store.listTrackedUsers().entries()) {
+            if (i) await new Promise(resolve => setTimeout(resolve, 500));
+            if (!downloadJobs.getJobStatus(data.guildId, userId)) {
+              const { job, created } = downloadJobs.startHeadless({ guildId: data.guildId, requestedById: config.specialUserId, targetUserId: userId, limit: data.limit ?? null });
+              if (created) await job.completion;
+            }
+          }
+        })().catch(() => {
+          console.error('Dashboard refresh-all failed.');
+        });
+        json(response, 202, { ok: true }); return;
       }
       if (pathname === '/api/backup' && request.method === 'GET') {
-        const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'riyad-backup-'));
-        const filename = path.join(dir, 'bot.sqlite');
+        const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'riyad-backup-')), filename = path.join(dir, 'bot.sqlite');
         try {
-          store.backupTo(filename);
-          const stream = fs.createReadStream(filename);
-          response.writeHead(200, {
-            'Content-Type': 'application/vnd.sqlite3',
-            'Content-Disposition': 'attachment; filename="bot-backup.sqlite"',
-            'Cache-Control': 'no-store',
-          });
-          stream.on('error', (error) => { console.error('Backup stream failed', error); response.destroy(error); });
-          response.on('close', () => stream.destroy());
-          stream.on('close', () => { void fsp.rm(dir, { recursive: true, force: true }); });
-          stream.pipe(response);
-        } catch (error) {
-          await fsp.rm(dir, { recursive: true, force: true });
-          throw error;
-        }
+          store.backupTo(filename); const stream = fs.createReadStream(filename);
+          response.writeHead(200, { 'Content-Type': 'application/vnd.sqlite3', 'Content-Disposition': 'attachment; filename="bot-backup.sqlite"', 'Cache-Control': 'no-store' });
+          stream.on('error', () => response.destroy()); response.on('close', () => stream.destroy());
+          stream.on('close', () => { void fsp.rm(dir, { recursive: true, force: true }); }); stream.pipe(response);
+        } catch (error) { await fsp.rm(dir, { recursive: true, force: true }); throw error; }
         return;
       }
       json(response, 404, { error: 'Not found' });
     } catch (error) {
-      if (error instanceof RangeError || error instanceof SyntaxError) {
-        json(response, 400, { error: error.message });
-      } else {
-        console.error('Dashboard request failed', error);
-        json(response, 500, { error: 'Internal error' });
-      }
+      json(response, error.statusCode || (error instanceof RangeError || error instanceof SyntaxError ? 400 : 500),
+        { error: error.statusCode === 413 ? 'Request body too large.' : error instanceof RangeError || error instanceof SyntaxError ? error.message : 'Internal error' });
     }
   });
-  server.listen(config.webDashboardPort, config.webDashboardHost, () => {
-    console.log(`Web dashboard listening on http://${config.webDashboardHost}:${server.address().port}`);
+  server.on('close', () => {
+    clearInterval(pruning); clearInterval(heartbeat); clearInterval(stats);
+    for (const stream of streams) stream.end();
+    store.off?.('change', onStoreChange);
+    nextReplyQueue?.off?.('change', onQueueChange);
+    downloadJobs?.off?.('change', onJobChange);
   });
+  server.liveClientCount = () => streams.size;
+  const close = server.close.bind(server);
+  server.close = callback => { for (const stream of streams) stream.end(); return close(callback); };
+  server.listen(config.webDashboardPort, config.webDashboardHost, () => console.log(`Web dashboard listening on http://${config.webDashboardHost}:${server.address().port}`));
   return server;
 }

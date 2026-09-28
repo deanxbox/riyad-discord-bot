@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
-export class NextReplyQueue {
+export class NextReplyQueue extends EventEmitter {
   constructor() {
+    super();
     this.entries = [];
   }
 
@@ -15,6 +17,7 @@ export class NextReplyQueue {
     };
 
     this.entries.push(entry);
+    this.emit('change', { type: 'queue', id: entry.id });
     return entry;
   }
 
@@ -30,6 +33,7 @@ export class NextReplyQueue {
     }
 
     const [entry] = this.entries.splice(index, 1);
+    this.emit('change', { type: 'queue', id: entry.id });
     return entry;
   }
 

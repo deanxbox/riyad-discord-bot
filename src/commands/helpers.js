@@ -49,6 +49,7 @@ export function formatTrackedUserSummary(summary, config) {
     `Tracked: ${summary.tracked ? 'Yes' : 'No'}`,
     `Nerded: ${summary.nerded ? 'Yes' : 'No'}`,
     `Stored messages: ${summary.messageCount}`,
+    `Media-only messages skipped: ${summary.mediaSkipped}`,
     `Reply mode: ${formatReplyMode(summary)}`,
     `Last download: ${formatDateTime(summary.lastDownloadedAt)}`,
     `Last updated: ${formatDateTime(summary.updatedAt)}`,
@@ -69,7 +70,7 @@ export function formatDownloadJobSummary(job) {
 
   return [
     `Status: ${job.status}`,
-    `Progress: ${job.downloadedCount}/${goal} messages`,
+    `Progress: ${job.downloadedCount} text messages stored, ${job.mediaSkipped} media-only skipped (${job.downloadedCount + job.mediaSkipped}/${goal} search results)`,
     `Search requests: ${job.requestsMade}`,
     `Last page added: ${job.lastPageCount}`,
     job.status === 'indexing' ? `Retry after: ${job.retryAfterSeconds}s` : null,

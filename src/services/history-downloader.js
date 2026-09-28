@@ -22,8 +22,11 @@ function throwIfCancelled(signal) {
   }
 }
 
-function shouldKeepMessage(message, targetUserId) {
-  return message?.author?.id === targetUserId && typeof message.content === 'string' && message.content.trim().length > 0;
+export function classifySearchMessage(message, targetUserId) {
+  if (message?.author?.id !== targetUserId) return 'ignored';
+  if (typeof message.content === 'string' && message.content.trim().length > 0) return 'text';
+  if (message.attachments?.length || message.sticker_items?.length || message.embeds?.length) return 'media-only';
+  return 'ignored';
 }
 
 function toStoredMessage(message) {
@@ -119,6 +122,8 @@ export async function downloadUserHistory({
   onProgress,
 }) {
   let downloadedCount = 0;
+  let mediaSkipped = 0;
+  let scannedCount = 0;
   let discoveredTotalResults = null;
   let requestsMade = 0;
   let maxId = null;
@@ -126,10 +131,10 @@ export async function downloadUserHistory({
   store.beginStagedUserDownload(jobId, targetUserId);
 
   try {
-    while (limit === null || downloadedCount < limit) {
+    while (limit === null || scannedCount < limit) {
       throwIfCancelled(signal);
 
-      const pageSize = limit === null ? PAGE_SIZE : Math.min(PAGE_SIZE, limit - downloadedCount);
+      const pageSize = limit === null ? PAGE_SIZE : Math.min(PAGE_SIZE, limit - scannedCount);
       const response = await fetchSearchPage({
         client,
         guildId,
@@ -141,6 +146,7 @@ export async function downloadUserHistory({
           await onProgress({
             status: 'indexing',
             downloadedCount,
+            mediaSkipped,
             totalResults: discoveredTotalResults,
             requestsMade,
             lastPageCount: 0,
@@ -162,6 +168,7 @@ export async function downloadUserHistory({
         await onProgress({
           status: 'running',
           downloadedCount,
+          mediaSkipped,
           totalResults: discoveredTotalResults,
           requestsMade,
           lastPageCount: 0,
@@ -169,9 +176,10 @@ export async function downloadUserHistory({
         break;
       }
 
-      const matchingMessages = searchMessages
-        .filter((message) => shouldKeepMessage(message, targetUserId))
-        .map(toStoredMessage);
+      const targetMessages = searchMessages.filter((message) => message?.author?.id === targetUserId).slice(0, pageSize);
+      scannedCount += targetMessages.length;
+      const matchingMessages = targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'text').map(toStoredMessage);
+      mediaSkipped += targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'media-only').length;
 
       const insertedCount = store.addStagedDownloadedMessages(jobId, targetUserId, matchingMessages);
       downloadedCount += insertedCount;
@@ -180,6 +188,7 @@ export async function downloadUserHistory({
       await onProgress({
         status: 'running',
         downloadedCount,
+        mediaSkipped,
         totalResults: discoveredTotalResults,
         requestsMade,
         lastPageCount: insertedCount,
@@ -191,17 +200,18 @@ export async function downloadUserHistory({
           ? limit
           : Math.min(discoveredTotalResults, limit);
 
-      if (!maxId || (targetTotal !== null && downloadedCount >= targetTotal)) {
+      if (!maxId || (targetTotal !== null && scannedCount >= targetTotal)) {
         break;
       }
     }
 
     throwIfCancelled(signal);
 
-    const finalCount = store.commitStagedUserDownload(jobId, targetUserId);
+    const finalCount = store.commitStagedUserDownload(jobId, targetUserId, mediaSkipped);
 
     return {
       downloadedCount: finalCount,
+      mediaSkipped,
       totalResults: discoveredTotalResults,
       requestsMade,
     };

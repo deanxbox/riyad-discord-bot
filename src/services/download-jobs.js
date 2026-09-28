@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { DownloadCancelledError, downloadUserHistory } from './history-downloader.js';
 
@@ -35,9 +36,9 @@ function resolveGoalCount(job) {
 
 function formatStatus(job) {
   const goalCount = resolveGoalCount(job);
-  const progressLine = goalCount === null
-    ? `${formatCount(job.downloadedCount)} messages stored so far`
-    : `${formatCount(job.downloadedCount)} / ${formatCount(goalCount)} messages`;
+  const processedCount = job.downloadedCount + job.mediaSkipped;
+  const progressLine = `${formatCount(job.downloadedCount)} text messages stored, ${formatCount(job.mediaSkipped)} media-only skipped` +
+    (goalCount === null ? '' : ` (${formatCount(processedCount)} / ${formatCount(goalCount)} search results)`);
 
   let statusLine = 'Starting download...';
 
@@ -58,8 +59,11 @@ function formatStatus(job) {
   return [
     `**Download job for <@${job.targetUserId}>**`,
     statusLine,
-    buildProgressBar(job.downloadedCount, goalCount),
+    buildProgressBar(processedCount, goalCount),
     `Progress: ${progressLine}`,
+    job.status === 'completed' && goalCount !== null && processedCount < goalCount
+      ? 'Other empty search results were ignored.'
+      : null,
     `Search requests: ${formatCount(job.requestsMade)}`,
     `Last page added: ${formatCount(job.lastPageCount)}`,
     job.status === 'indexing' ? `Indexed documents so far: ${formatCount(job.documentsIndexed)}` : null,
@@ -90,13 +94,26 @@ function buildComponents(job, disabled = false) {
   ];
 }
 
-export class DownloadJobManager {
+export function createProgressPublisher(publish, now = Date.now) {
+  const last = new Map();
+  return (job, phase = 'progress') => {
+    const time = now();
+    if (phase === 'progress' && time - (last.get(job.id) ?? -Infinity) < 500) return;
+    if (phase === 'progress') last.set(job.id, time);
+    if (phase === 'finished') last.delete(job.id);
+    publish({ type: phase, id: job.id, guildId: job.guildId, userId: job.targetUserId, status: job.status, downloadedCount: job.downloadedCount, mediaSkipped: job.mediaSkipped, totalResults: job.totalResults });
+  };
+}
+
+export class DownloadJobManager extends EventEmitter {
   constructor({ client, config, store }) {
+    super();
     this.client = client;
     this.config = config;
     this.store = store;
     this.jobs = new Map();
     this.jobsByTarget = new Map();
+    this.publishProgress = createProgressPublisher(change => this.emit('change', change));
   }
 
   targetKey(guildId, userId) {
@@ -122,6 +139,7 @@ export class DownloadJobManager {
       targetUserId,
       limit,
       downloadedCount: 0,
+      mediaSkipped: 0,
       totalResults: null,
       requestsMade: 0,
       lastPageCount: 0,
@@ -162,6 +180,7 @@ export class DownloadJobManager {
     }
 
     job.status = 'cancel_requested';
+    this.publishProgress(job, 'status');
     job.abortController.abort();
 
     void this.render(job, { force: true });
@@ -189,6 +208,7 @@ export class DownloadJobManager {
 
     this.jobs.set(job.id, job);
     this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
+    this.publishProgress(job, 'created');
 
     await interaction.editReply({
       content: formatStatus(job),
@@ -219,6 +239,7 @@ export class DownloadJobManager {
 
     this.jobs.set(job.id, job);
     this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
+    this.publishProgress(job, 'created');
 
     void this.run(job);
 
@@ -258,6 +279,7 @@ export class DownloadJobManager {
     }
 
     job.status = 'cancel_requested';
+    this.publishProgress(job, 'status');
     job.abortController.abort();
 
     await interaction.deferUpdate();
@@ -278,19 +300,23 @@ export class DownloadJobManager {
         onProgress: async ({
           status,
           downloadedCount,
+          mediaSkipped,
           totalResults,
           requestsMade,
           lastPageCount,
           retryAfterSeconds = 0,
           documentsIndexed = 0,
         }) => {
+          const oldStatus = job.status;
           job.status = status;
           job.downloadedCount = downloadedCount;
+          job.mediaSkipped = mediaSkipped;
           job.totalResults = totalResults ?? job.totalResults;
           job.requestsMade = requestsMade;
           job.lastPageCount = lastPageCount;
           job.retryAfterSeconds = retryAfterSeconds;
           job.documentsIndexed = documentsIndexed;
+          this.publishProgress(job, oldStatus === status ? 'progress' : 'status');
 
           await job.onProgress?.(job);
           await this.render(job);
@@ -299,11 +325,13 @@ export class DownloadJobManager {
 
       job.status = 'completed';
       job.downloadedCount = result.downloadedCount;
+      job.mediaSkipped = result.mediaSkipped;
       job.totalResults = result.totalResults ?? job.totalResults;
       job.requestsMade = result.requestsMade;
       job.lastPageCount = 0;
       job.retryAfterSeconds = 0;
       job.documentsIndexed = 0;
+      this.publishProgress(job, 'finished');
 
       await job.onProgress?.(job);
       await this.render(job, { force: true, disableButtons: true });
@@ -311,6 +339,7 @@ export class DownloadJobManager {
     } catch (error) {
       if (error instanceof DownloadCancelledError) {
         job.status = 'cancelled';
+        this.publishProgress(job, 'finished');
         await job.onProgress?.(job);
         await this.render(job, { force: true, disableButtons: true });
         job.resolveCompletion({ ok: false, cancelled: true, job });
@@ -318,6 +347,7 @@ export class DownloadJobManager {
         console.error(`Download job ${job.id} failed`, error);
         job.status = 'failed';
         job.errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        this.publishProgress(job, 'finished');
         await job.onProgress?.(job);
         await this.render(job, { force: true, disableButtons: true });
         job.resolveCompletion({ ok: false, cancelled: false, error, job });

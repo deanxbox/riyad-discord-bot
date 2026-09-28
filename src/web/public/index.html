@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Riyad • Control Room</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login" aria-labelledby="login-title" hidden>
+    <div class="brand-mark" aria-hidden="true">R</div><p class="eyebrow">RIYAD BOT</p>
+    <h1 id="login-title">Control room</h1><p class="muted">Connect to your private local dashboard.</p>
+    <label for="token">Dashboard token</label><input id="token" type="password" autocomplete="off">
+    <button id="connect" class="primary">Connect securely</button><p id="error" role="alert"></p>
+  </section>
+  <main id="app" hidden>
+    <aside class="sidebar"><div class="brand"><span class="brand-mark">R</span><div><b>Riyad</b><small>CONTROL ROOM</small></div></div>
+      <nav aria-label="Dashboard sections">
+        <button class="nav active" data-tab="overview" aria-label="Overview">◈ <span>Overview</span></button>
+        <button class="nav" data-tab="users" aria-label="Users">◎ <span>Users</span></button>
+        <button class="nav" data-tab="downloads" aria-label="Downloads">⇩ <span>Downloads</span></button>
+        <button class="nav" data-tab="config" aria-label="Config">⚙ <span>Config</span></button>
+        <button class="nav" data-tab="trivia" aria-label="Trivia">✦ <span>Trivia</span></button>
+        <button class="nav" data-tab="queue" aria-label="Queue">≋ <span>Queue</span></button>
+        <button id="logout" class="nav" aria-label="Log out">⇥ <span>Log out</span></button>
+      </nav><div class="sidebar-foot"><span class="status-dot"></span> Local connection</div>
+    </aside>
+    <section class="content"><header><div><p class="eyebrow">DASHBOARD</p><h1 id="title">Overview</h1></div><div class="row"><span id="live" class="pill" role="status">Reconnecting</span><button id="refresh" class="quiet">↻ Refresh</button></div></header>
+      <section id="overview" class="tab active">
+        <div class="stats" id="stats"></div><article class="card"><h2>At a glance</h2><p class="muted">Live runtime settings</p><div id="glance" class="glance"></div></article>
+      </section>
+      <section id="users" class="tab">
+        <article class="card"><div class="row between"><div><h2>Tracked users</h2><p class="muted">Manage archived messages and reply behavior.</p></div><button id="addUser" class="primary">＋ Add user</button></div>
+          <div class="filters"><label class="search-label">Search users<input id="search" type="search" placeholder="Name or ID"></label><label>Sort by<select id="sort"><option value="name">Name</option><option value="count">Message count</option><option value="last">Last download</option></select></label></div>
+          <div id="user-list" class="user-list"></div></article>
+      </section>
+      <section id="downloads" class="tab">
+        <article class="card"><h2>Download history</h2><form id="download-form" class="form-grid">
+          <label>User ID<input id="download-user" required inputmode="numeric" pattern="[0-9]{17,20}" aria-describedby="download-help"></label>
+          <label>Server<select id="download-guild" required></select></label><label>Message limit <span class="muted">(optional)</span><input id="download-limit" type="number" min="1" placeholder="All messages"></label>
+          <button class="primary" type="submit">Start download</button><small id="download-help">Enter a Discord user ID (17–20 digits).</small></form>
+          <button id="refresh-all" class="quiet">Refresh all tracked users</button></article>
+        <article class="card"><h2>Active jobs</h2><div id="job-list" class="user-list"></div></article>
+      </section>
+      <section id="config" class="tab"><article class="card"><h2>Runtime configuration</h2><p class="muted">Only safe live settings are editable. Secrets and network/database settings remain environment-only.</p><form id="config-form" class="form-grid">
+        <label>Reply chance (%)<input name="replyChancePercent" type="number" min="0" max="100" required></label>
+        <label>Reaction denominator (1 in N)<input name="reactionChanceDenominator" type="number" min="1" max="1000000" required></label>
+        <label>Always-reply user ID<input name="alwaysReplyUserId" required pattern="[0-9]{17,20}"><small data-resolved="alwaysReplyUserId"></small></label>
+        <label>Nerd emoji<input name="nerdEmoji" maxlength="100" required></label>
+        <label>Special admin user ID<input name="specialUserId" required pattern="[0-9]{17,20}"><small data-resolved="specialUserId"></small></label>
+        <label>Special admin role ID<input name="specialRoleId" required pattern="[0-9]{17,20}"><small data-resolved="specialRoleId"></small></label>
+        <label>Guild ID<input name="guildId" pattern="[0-9]{17,20}"><small data-resolved="guildId"></small><small>Optional; blank disables the default guild.</small></label><button class="primary">Save configuration</button></form></article></section>
+      <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><ol id="scores"></ol></article></section>
+      <section id="queue" class="tab"><article class="card"><h2>Next-reply queue</h2><div id="queue-list" class="user-list"></div><p class="muted">Queue changes are managed in Discord.</p></article></section>
+      <footer><button id="backup" class="quiet">Download database backup</button><span class="muted">Private dashboard · localhost</span></footer>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="drawer" aria-labelledby="drawer-title"><form method="dialog"><button class="close" aria-label="Close details">×</button></form><h2 id="drawer-title">User details</h2><div id="drawer-body"></div></dialog>
+</body></html>
