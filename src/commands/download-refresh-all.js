@@ -44,6 +44,10 @@ export const downloadRefreshAllCommand = {
     let lastRenderAt = 0;
 
     for (const [index, userId] of trackedUsers.entries()) {
+      if (index > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
       if (downloadJobs.getJobStatus(interaction.guildId, userId)) {
         skipped += 1;
         continue;

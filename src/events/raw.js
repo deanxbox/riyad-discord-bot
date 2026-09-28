@@ -16,13 +16,13 @@ async function fetchMessageFromPacket(client, packet) {
   return channel.messages.fetch(packet.d.message_id).catch(() => null);
 }
 
-export async function handleRaw(packet, { client, config }) {
+export async function handleRaw(packet, { client, config, store }) {
   if (!packet?.t || !packet?.d?.guild_id || packet.d.user_id === client.user.id) {
     return;
   }
 
   if (packet.t === 'MESSAGE_REACTION_ADD') {
-    await handleReactionAdd(packet, { client, config });
+    await handleReactionAdd(packet, { client, config, store });
     return;
   }
 
@@ -31,7 +31,7 @@ export async function handleRaw(packet, { client, config }) {
   }
 }
 
-async function handleReactionAdd(packet, { client, config }) {
+async function handleReactionAdd(packet, { client, config, store }) {
   const userId = packet.d.user_id;
 
   if (userId === config.specialUserId && isNerdEmoji(packet.d.emoji, config)) {
@@ -50,7 +50,7 @@ async function handleReactionAdd(packet, { client, config }) {
   const hasSpecialRole = packet.d.member?.roles?.includes(config.specialRoleId);
   const shouldMirrorReaction =
     userId === config.specialUserId ||
-    (hasSpecialRole && Math.floor(Math.random() * config.reactionChanceDenominator) === 0);
+    (hasSpecialRole && Math.floor(Math.random() * store.getReactionChanceDenominator()) === 0);
 
   if (!shouldMirrorReaction) {
     return;

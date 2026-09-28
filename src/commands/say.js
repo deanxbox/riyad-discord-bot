@@ -40,14 +40,24 @@ export const sayCommand = {
     });
 
     if (messageId) {
+      let referenceMessage;
       try {
-        const referenceMessage = await interaction.channel.messages.fetch(messageId);
-        await referenceMessage.reply(message);
-        return;
-      } catch {
-        await interaction.channel.send(message);
+        referenceMessage = await interaction.channel.messages.fetch(messageId);
+      } catch (error) {
+        if (error.code === 10008) {
+          await interaction.channel.send(message);
+          return;
+        }
+
+        console.error(`Failed to reply to message ${messageId}`, error);
+        await interaction.followUp({
+          content: 'Could not send that reply. Please check the message and try again.',
+          ephemeral: true,
+        });
         return;
       }
+      await referenceMessage.reply(message);
+      return;
     }
 
     await interaction.channel.send(message);

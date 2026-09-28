@@ -2,12 +2,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+const TRIVIA_LIFETIME_MS = 10 * 60 * 1000;
+
 function nowIso() {
   return new Date().toISOString();
 }
 
+export function isTriviaExpired(question, now = Date.now()) {
+  return now - Date.parse(question.created_at) > TRIVIA_LIFETIME_MS;
+}
+
 export class DataStore {
-  constructor(dbPath, { defaultReplyChancePercent = 4 } = {}) {
+  constructor(dbPath, {
+    defaultReplyChancePercent = 4,
+    reactionChanceDenominator = 6,
+    alwaysReplyUserId = '256876746861707264',
+    nerdEmoji = '🤓',
+  } = {}) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     this.db = new DatabaseSync(dbPath);
@@ -15,6 +26,9 @@ export class DataStore {
     this.nerdedUsers = new Set();
     this.messageCounts = new Map();
     this.replyChancePercent = defaultReplyChancePercent;
+    this.defaultReactionChanceDenominator = reactionChanceDenominator;
+    this.defaultAlwaysReplyUserId = alwaysReplyUserId;
+    this.defaultNerdEmoji = nerdEmoji;
 
     this.initialize();
     this.runMigrations();
@@ -126,6 +140,8 @@ export class DataStore {
       FROM metadata
       WHERE key = ?
     `);
+
+    this.deleteMetadataStmt = this.db.prepare('DELETE FROM metadata WHERE key = ?');
 
     this.updateTrackedStmt = this.db.prepare(`
       UPDATE user_settings
@@ -306,6 +322,11 @@ export class DataStore {
     this.db.close();
   }
 
+  backupTo(destination) {
+    // VACUUM INTO makes a consistent SQLite snapshot, including uncheckpointed WAL changes.
+    this.db.prepare('VACUUM INTO ?').run(destination);
+  }
+
   transaction(work) {
     this.db.exec('BEGIN IMMEDIATE');
 
@@ -326,14 +347,6 @@ export class DataStore {
     if (!hasColumn) {
       this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
     }
-  }
-
-  hasLegacyImportCompleted() {
-    return this.getMetadata('legacy_import_completed') === '1';
-  }
-
-  markLegacyImportCompleted() {
-    this.setMetadata('legacy_import_completed', '1');
   }
 
   getMetadata(key) {
@@ -368,6 +381,50 @@ export class DataStore {
 
   getReplyChancePercent() {
     return this.replyChancePercent;
+  }
+
+  getReactionChanceDenominator() {
+    return Number(this.getMetadata('reaction_chance_denominator') ?? this.defaultReactionChanceDenominator);
+  }
+
+  setReactionChanceDenominator(value) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 1000000) {
+      throw new RangeError('Reaction chance denominator must be an integer from 1 to 1000000.');
+    }
+    this.setMetadata('reaction_chance_denominator', String(value));
+    return value;
+  }
+
+  getAlwaysReplyUserId() {
+    return this.getMetadata('always_reply_user_id') ?? this.defaultAlwaysReplyUserId;
+  }
+
+  setAlwaysReplyUserId(value) {
+    if (value !== null && (typeof value !== 'string' || !/^\d{17,20}$/.test(value))) {
+      throw new RangeError('Always-reply user ID must be a Discord snowflake.');
+    }
+    if (value === null) {
+      this.deleteMetadataStmt.run('always_reply_user_id');
+    } else {
+      this.setMetadata('always_reply_user_id', value);
+    }
+    return this.getAlwaysReplyUserId();
+  }
+
+  getNerdEmoji() {
+    return this.getMetadata('nerd_emoji') ?? this.defaultNerdEmoji;
+  }
+
+  setNerdEmoji(value) {
+    if (value !== null && (typeof value !== 'string' || !value.trim() || value.length > 100)) {
+      throw new RangeError('Nerd emoji must be a nonempty emoji string (max 100 characters).');
+    }
+    if (value === null) {
+      this.deleteMetadataStmt.run('nerd_emoji');
+    } else {
+      this.setMetadata('nerd_emoji', value.trim());
+    }
+    return this.getNerdEmoji();
   }
 
   getReplyChanceOverride(userId) {
@@ -695,6 +752,10 @@ export class DataStore {
     return this.transaction(() => {
       const question = this.selectTriviaActiveStmt.get(normalizedGuildId);
       if (!question) return { status: 'no_question' };
+      if (isTriviaExpired(question)) {
+        this.deleteTriviaActiveStmt.run(normalizedGuildId);
+        return { status: 'no_question' };
+      }
 
       const answeredIds = JSON.parse(question.answered_user_ids);
       if (answeredIds.includes(normalizedUserId)) return { status: 'already_answered' };

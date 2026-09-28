@@ -6,18 +6,17 @@ import { handleRaw } from './events/raw.js';
 import { handleReady } from './events/ready.js';
 import { DataStore } from './services/data-store.js';
 import { DownloadJobManager } from './services/download-jobs.js';
-import { importLegacyStoreIfPresent } from './services/legacy-import.js';
 import { NextReplyQueue } from './services/next-reply-queue.js';
 import { VoiceManager } from './services/voice-manager.js';
+import { startWebDashboard } from './web/server.js';
 
 const store = new DataStore(config.dbPath, {
   defaultReplyChancePercent: config.defaultReplyChancePercent,
+  alwaysReplyUserId: config.alwaysReplyUserId,
+  nerdEmoji: config.nerdEmoji,
 });
-const legacyImportResult = importLegacyStoreIfPresent(store, config.rootDir);
-
-if (legacyImportResult.imported) {
-  console.log('Imported legacy text-file data into SQLite.');
-}
+config.alwaysReplyUserId = store.getAlwaysReplyUserId();
+config.nerdEmoji = store.getNerdEmoji();
 
 const client = new Client({
   intents: [
@@ -33,6 +32,9 @@ const downloadJobs = new DownloadJobManager({ client, config, store });
 const nextReplyQueue = new NextReplyQueue();
 const voiceManager = new VoiceManager(client);
 const context = { client, config, store, downloadJobs, nextReplyQueue, voiceManager };
+const webDashboard = config.webDashboardEnabled
+  ? startWebDashboard({ config, store, downloadJobs, nextReplyQueue })
+  : null;
 
 client.once(Events.ClientReady, async () => {
   await handleReady(client, config);
@@ -60,6 +62,7 @@ client.on(Events.Error, (error) => {
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    webDashboard?.close();
     store.close();
     client.destroy();
     process.exit(0);

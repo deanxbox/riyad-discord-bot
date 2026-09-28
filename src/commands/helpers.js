@@ -1,5 +1,6 @@
 export async function requireAdmin(interaction, config) {
-  if (interaction.user.id === config.specialUserId) {
+  if (interaction.user.id === config.specialUserId ||
+      (interaction.inGuild() && interaction.member?.roles?.cache?.has(config.specialRoleId))) {
     return true;
   }
 

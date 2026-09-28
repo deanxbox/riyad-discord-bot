@@ -8,7 +8,7 @@ This bot now runs on JavaScript with `discord.js` and stores all state in a sing
 src/
   commands/        Slash command definitions and handlers
   events/          Discord event handlers
-  services/        SQLite store and legacy import logic
+  services/        SQLite store and download logic
   config.js        Runtime configuration
   bootstrap.js     Loads .env and starts the app
   index.js         App entrypoint
@@ -49,6 +49,9 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 - `/download-status [user]` shows active download jobs, or the specific status for one user.
 - `/download-cancel <user>` cancels an active download for a user.
 - `/download-refresh-all [message_count]` refreshes every tracked user sequentially.
+- `/help` privately lists every registered command and its description.
+- `/backup` privately sends an atomic SQLite snapshot to an admin.
+- `/reaction-chance [denominator]` shows or updates the special-role reaction mirror chance (1 in N).
 - `/delete <user>` removes a tracked user's stored messages and disables tracking.
 - `/tracked-user <user>` shows stored count, tracked state, nerd state, and reply mode for a user.
 - `/nerd <user>` enables auto-reacting with the nerd emoji.
@@ -65,3 +68,18 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 - `/say <message> [message_id]` makes the bot send or reply with a message.
 - `/nerd-list` lists nerded users.
 - `/downloaded-list` lists tracked users.
+- `/trivia` starts a ten-minute trivia round; `/scoreboard` lists winners.
+
+## Optional web dashboard
+
+Set `WEB_DASHBOARD_ENABLED=true` and a long, random `WEB_DASHBOARD_TOKEN` in `.env`, then restart.
+The dashboard listens on `127.0.0.1:8787` by default (`WEB_DASHBOARD_HOST`/`WEB_DASHBOARD_PORT` to change).
+Open it locally, enter the token, and manage tracked/nerded users, per-user and global reply chance,
+reaction chance, always-reply user ID and nerd emoji. It also shows active downloads,
+the next-reply queue and a guild's trivia scores (use Refresh status for current data),
+and downloads a consistent SQLite backup.
+The token is kept in browser memory only; neither it nor `DISCORD_TOKEN` is returned by an API.
+Changes to the always-reply ID and emoji persist as SQLite overrides; Reset restores the `.env` default.
+Global reply chance already persists in SQLite and takes precedence over `DEFAULT_REPLY_CHANCE_PERCENT`
+after its first initialization. Do not expose the dashboard directly on a public network:
+HTTP is unencrypted; use a private tunnel or authenticated HTTPS reverse proxy for remote access.

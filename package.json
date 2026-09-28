@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
-    "dotenv": "^16.6.1",
-    "discord.js": "^14.0.0"
+    "discord-api-types": "0.38.44",
+    "discord.js": "^14.0.0",
+    "dotenv": "^16.6.1"
   }
 }

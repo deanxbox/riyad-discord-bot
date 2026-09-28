@@ -1,4 +1,7 @@
 import { Collection } from 'discord.js';
+import { backupCommand } from './backup.js';
+import { helpCommand } from './help.js';
+import { reactionChanceCommand } from './reaction-chance.js';
 import { deleteCommand } from './delete.js';
 import { scoreboardCommand } from './scoreboard.js';
 import { triviaCommand } from './trivia.js';
@@ -23,6 +26,9 @@ import { trackedUserCommand } from './tracked-user.js';
 import { unNerdCommand } from './un-nerd.js';
 
 const commands = [
+  helpCommand,
+  backupCommand,
+  reactionChanceCommand,
   downloadCommand,
   downloadStatusCommand,
   downloadCancelCommand,

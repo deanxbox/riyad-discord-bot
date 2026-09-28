@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { isTriviaExpired } from '../services/data-store.js';
 
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
@@ -15,7 +16,10 @@ export const triviaCommand = {
       return;
     }
 
-    if (store.getActiveTriviaQuestion(guild.id)) {
+    const activeQuestion = store.getActiveTriviaQuestion(guild.id);
+    if (activeQuestion && isTriviaExpired(activeQuestion)) {
+      store.clearActiveTriviaQuestion(guild.id);
+    } else if (activeQuestion) {
       await interaction.reply({
         content: 'There\'s already an active trivia question in this server! Answer it first.',
         ephemeral: true,
