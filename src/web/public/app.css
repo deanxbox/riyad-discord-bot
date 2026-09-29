@@ -34,6 +34,12 @@
 .drawer-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
 #drawer .danger { border-color: #76404b; color: #ffb4c0; background: #42272e; }
 #drawer .danger:hover { background: #62303b; }
+.bulk-actions { flex-wrap: wrap; }
+.bulk-actions label { display: flex; align-items: center; gap: .4rem; margin: 0; }
+.bulk-actions input { width: auto; margin: 0; }
+#users .user-row > input[type="checkbox"] { width: 1rem; margin: 0; }
+#users .user-row { grid-template-columns: 1rem 40px minmax(0, 1fr) auto auto; }
+.job-preview { overflow-wrap: anywhere; white-space: pre-wrap; }
 @media (max-width: 1100px) { #users .user-row { grid-template-columns: 40px minmax(0, 1fr) auto; } #users .user-status { grid-column: 2 / -1; justify-content: flex-start; } }
 @media (max-width: 540px) { #users > .card > .row > button { width: 100%; } #users .user-row { grid-template-columns: 40px minmax(0, 1fr); } #users .user-row > button { grid-column: 1 / -1; } #users .user-status { grid-column: 1 / -1; } #drawer { border-radius: 0; } #drawer .drawer-header { padding: 1.15rem 1rem; } #drawer-body { padding: 1.25rem 1rem 2rem; } .drawer-tools { grid-template-columns: 1fr; } }
 
@@ -63,3 +69,5 @@
 .score-points { color: var(--muted); white-space: nowrap; }
 @media (max-width: 650px) { #config .form-grid { grid-template-columns: 1fr; } .content > header { flex-wrap: wrap; } .content > header .row { flex-wrap: wrap; } }
 @media (max-width: 540px) { #downloads .form-grid { grid-template-columns: 1fr; } #downloads .form-grid > button { width: 100%; } #users .user-main small { white-space: normal; overflow-wrap: anywhere; } }
+@media (max-width: 1100px) { #users .user-row { grid-template-columns: 1rem 40px minmax(0, 1fr) auto; } }
+@media (max-width: 540px) { #users .user-row { grid-template-columns: 1rem 40px minmax(0, 1fr); } #users .user-row > button, #users .user-status { grid-column: 2 / -1; } }

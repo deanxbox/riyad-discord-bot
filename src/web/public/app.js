@@ -1,4 +1,5 @@
-let state = null, poller = null, stream = null, refreshTimer = null, selected = 'overview';
+let state = null, stream = null, reconnectTimer = null, reconnectDelay = 1000, refreshTimer = null, selected = 'overview';
+const selectedUsers = new Set();
 const $ = id => document.getElementById(id);
 const api = async (url, options = {}) => {
   const response = await fetch(url, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(['POST', 'PUT', 'DELETE'].includes(options.method) ? { 'X-Requested-With': 'dashboard' } : {}) } });
@@ -18,7 +19,7 @@ function avatar(user) {
 }
 function person(user) { return user?.displayName || user?.username || user?.id || 'Unknown'; }
 function showLogin(expired = false) {
-  stream?.close(); stream = null; clearTimeout(refreshTimer); clearInterval(poller); poller = null;
+  stream?.close(); stream = null; clearTimeout(refreshTimer); clearTimeout(reconnectTimer);
   if ($('drawer').open) $('drawer').close();
   $('app').hidden = true; $('login').hidden = false; state = null;
   if (expired) toast('Session expired');
@@ -33,11 +34,19 @@ function startLive() {
   $('live').textContent = 'Reconnecting';
   stream = new EventSource('/api/events');
   const current = stream;
-  stream.onopen = () => { $('live').textContent = 'Live'; updateFallback(); };
+  stream.onopen = () => {
+    if (stream !== current) return;
+    reconnectDelay = 1000; $('live').textContent = 'Live'; scheduleRefresh();
+  };
   stream.onerror = async () => {
     if (stream !== current) return;
-    $('live').textContent = 'Reconnecting'; updateFallback();
-    try { const response = await fetch('/api/session'); if (stream === current && response.status === 401) showLogin(true); } catch { /* temporary network failure; EventSource retries */ }
+    current.close(); stream = null; $('live').textContent = 'Reconnecting';
+    try {
+      const response = await fetch('/api/session');
+      if (response.status === 401) { showLogin(true); return; }
+    } catch { /* retry on temporary network failure */ }
+    reconnectTimer = setTimeout(startLive, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
   for (const type of ['download', 'user', 'config', 'queue', 'trivia']) {
     stream.addEventListener(type, () => {
@@ -52,18 +61,12 @@ function startLive() {
     state.stats = JSON.parse(e.data);
     if (selected === 'overview') renderOverview();
   });
-  updateFallback();
 }
 function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => (selected === 'downloads' ? refreshJobs() : refresh()).catch(fail), 300); }
-function updateFallback() {
-  clearInterval(poller);
-  poller = selected === 'downloads' && stream?.readyState !== EventSource.OPEN
-    ? setInterval(() => refreshJobs().catch(fail), 15000) : null;
-}
 function nav(tab) {
   selected = tab; document.querySelectorAll('.nav[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab').forEach(s => s.classList.toggle('active', s.id === tab));
-  $('title').textContent = tab[0].toUpperCase() + tab.slice(1); updateFallback();
+  $('title').textContent = tab[0].toUpperCase() + tab.slice(1);
   if (state) scheduleRefresh();
 }
 function fillSelect(select, guilds, preferred) {
@@ -73,10 +76,14 @@ function fillSelect(select, guilds, preferred) {
 }
 function renderUsers() {
   const list = $('user-list'), query = $('search').value.toLowerCase(), sort = $('sort').value;
+  for (const id of selectedUsers) if (!state.users.some(u => u.user.id === id)) selectedUsers.delete(id);
   const users = state.users.filter(u => `${person(u.user)} ${u.user.id}`.toLowerCase().includes(query));
   users.sort((a,b) => sort === 'count' ? b.messageCount-a.messageCount : sort === 'last' ? String(b.lastDownloadedAt||'').localeCompare(String(a.lastDownloadedAt||'')) : person(a.user).localeCompare(person(b.user)));
   list.replaceChildren(...users.map(u => {
-    const row = document.createElement('div'); row.className = 'user-row'; row.append(avatar(u.user));
+    const row = document.createElement('div'); row.className = 'user-row';
+    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = selectedUsers.has(u.user.id); check.dataset.userId = u.user.id; check.setAttribute('aria-label', `Select ${person(u.user)}`);
+    check.onchange = () => { if (check.checked) selectedUsers.add(u.user.id); else selectedUsers.delete(u.user.id); updateSelection(users); };
+    row.append(check, avatar(u.user));
     const main = document.createElement('div'); main.className = 'user-main'; main.append(node('strong', person(u.user)), node('small', `${u.messageCount} text stored · ${u.lastDownloadedAt ? new Date(u.lastDownloadedAt).toLocaleString() : 'Never downloaded'} · ${u.user.id}`)); main.title = `${person(u.user)} · ${u.user.id}`;
     const status = document.createElement('div'); status.className = 'user-status';
     status.append(node('span', `${u.mediaSkipped} media-only skipped`, 'badge'), node('span', u.tracked ? 'Tracked' : 'Not tracked', `badge ${u.tracked ? 'green' : ''}`));
@@ -84,14 +91,25 @@ function renderUsers() {
     row.append(main, status);
     const open = node('button', 'Manage'); open.onclick = () => showUser(u); row.append(open); return row;
   }));
+  updateSelection(users);
   if (!users.length) list.append(node('p', query ? 'No users match this search.' : 'No users to manage yet.', 'empty-state'));
 }
+function updateSelection(users) {
+  const count = users.filter(u => selectedUsers.has(u.user.id)).length;
+  $('selection-count').textContent = `${count} selected`;
+  $('select-visible').checked = Boolean(users.length && count === users.length);
+  $('select-visible').indeterminate = count > 0 && count < users.length;
+  $('bulk-download').disabled = $('bulk-delete').disabled = !count;
+}
+const visibleSelectedIds = () => [...$('user-list').querySelectorAll('input[type="checkbox"]:checked')].map(input => input.dataset.userId);
 function renderJobs(jobs) {
   $('job-list').replaceChildren(...jobs.map(j => {
     const row = document.createElement('div'); row.className = 'user-row';
     const main = document.createElement('div'); main.className = 'user-main';
     const goal = j.limit === null ? j.totalResults : Math.min(j.limit, j.totalResults ?? j.limit);
     main.append(node('strong', person(j.target)), node('small', `${j.status} · ${j.downloadedCount} text messages stored, ${j.mediaSkipped} media-only skipped · ${j.downloadedCount + j.mediaSkipped} / ${goal ?? '…'} search results · requested by ${person(j.requestedBy)}`));
+    if (j.retryAfterSeconds && ['indexing', 'rate_limited'].includes(j.status)) main.append(node('small', `Waiting ${j.retryAfterSeconds}s for Discord`));
+    if (j.currentMessage) main.append(node('small', `${j.currentMessage.author} · ${j.currentMessage.timestamp ? new Date(j.currentMessage.timestamp).toLocaleString() : 'Unknown time'} · ${j.currentMessage.content || '[media-only]'}`, 'job-preview'));
     const cancel = node('button', 'Cancel'); cancel.onclick = async () => { try { await api(`/api/downloads/${j.guildId}/${j.target.id}`, { method: 'DELETE' }); await refresh(); } catch (e) { fail(e); } };
     row.append(main, cancel); return row;
   }));
@@ -116,7 +134,7 @@ async function showUser(u) {
   const random = node('button', 'View random stored line'); random.onclick = async () => { try { const data = await (await api(`/api/users/${u.user.id}/random`)).json(); alert(data.message ? `${data.message.created_at}\n\n${data.message.content}` : 'No stored lines.'); } catch (e) { fail(e); } };
   const exportButton = node('button', 'Export .txt'); exportButton.onclick = async () => { try { const blob = await (await api(`/api/users/${u.user.id}/export`)).blob(), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${u.user.id}.txt`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 30000); } catch (e) { fail(e); } };
   const download = node('button', 'Re-download'); download.onclick = () => { nav('downloads'); $('download-user').value = u.user.id; $('member-search').value = person(u.user); $('member-results').replaceChildren(); dialog.close(); $('download-form').requestSubmit(); };
-  const del = node('button', 'Delete stored messages', 'danger'); del.onclick = async () => { if (!confirm(`Delete all stored messages for ${person(u.user)}?`)) return; try { await request(`/api/users/${u.user.id}`, { deleteMessages: true }); await refresh(); dialog.close(); toast('Stored messages deleted'); } catch (e) { fail(e); } };
+  const del = node('button', 'Delete user entirely', 'danger'); del.onclick = async () => { if (!confirm(`Permanently delete all saved data for ${person(u.user)} and cancel their downloads?`)) return; try { await api(`/api/users/${u.user.id}`, { method: 'DELETE' }); await refresh(); dialog.close(); toast('User deleted'); } catch (e) { fail(e); } };
   settings.append(actions, save);
   const tools = node('section', '', 'drawer-section'); tools.append(node('h3', 'Stored messages'));
   const toolButtons = node('div', '', 'drawer-tools'); toolButtons.append(random, exportButton, download); tools.append(toolButtons);
@@ -133,7 +151,7 @@ function render(stateData) {
   if (selected === 'overview') renderOverview();
   const form = $('config-form');
   if (selected === 'config') {
-    if (!form.dataset.editing) for (const [key, value] of Object.entries({ replyChancePercent: state.replyChancePercent, reactionChanceDenominator: state.reactionChanceDenominator, alwaysReplyUserId: state.alwaysReplyUser.id, nerdEmoji: state.nerdEmoji, specialUserId: state.specialUser.id, specialRoleId: state.specialRoleId, guildId: state.guildId || '' })) if (document.activeElement !== form.elements[key]) form.elements[key].value = value;
+    if (!form.dataset.editing) for (const [key, value] of Object.entries({ replyChancePercent: state.replyChancePercent, reactionChanceDenominator: state.reactionChanceDenominator, downloadConcurrency: state.downloadConcurrency, alwaysReplyUserId: state.alwaysReplyUser.id, nerdEmoji: state.nerdEmoji, specialUserId: state.specialUser.id, specialRoleId: state.specialRoleId, guildId: state.guildId || '' })) if (document.activeElement !== form.elements[key]) form.elements[key].value = value;
     if (!form.dataset.editing) {
       document.querySelector('[data-resolved="alwaysReplyUserId"]').textContent = person(state.alwaysReplyUser);
       document.querySelector('[data-resolved="specialUserId"]').textContent = person(state.specialUser);
@@ -191,6 +209,27 @@ fetch('/api/session').then(async response => {
 $('refresh').onclick = () => refresh().catch(fail);
 document.querySelectorAll('.nav').forEach(b => b.addEventListener('click', () => nav(b.dataset.tab)));
 $('search').addEventListener('input', () => state && renderUsers()); $('sort').onchange = () => state && renderUsers();
+$('select-visible').onchange = () => {
+  for (const input of $('user-list').querySelectorAll('input[type="checkbox"]')) input.checked = $('select-visible').checked;
+  const query = $('search').value.toLowerCase();
+  for (const u of state.users.filter(u => `${person(u.user)} ${u.user.id}`.toLowerCase().includes(query))) {
+    if ($('select-visible').checked) selectedUsers.add(u.user.id); else selectedUsers.delete(u.user.id);
+  }
+  renderUsers();
+};
+async function bulk(action) {
+  const userIds = visibleSelectedIds();
+  if (!userIds.length || !confirm(`${action === 'delete' ? 'Permanently delete all data and cancel downloads for' : 'Download messages for'} ${userIds.length} selected users?`)) return;
+  try {
+    const result = await (await request('/api/users/bulk', { action, userIds, guildId: $('download-guild').value })).json();
+    selectedUsers.clear();
+    await refresh();
+    toast(action === 'delete' ? `${result.deleted} users deleted` : `${result.started} downloads started, ${result.skipped} skipped`);
+    if (action === 'download') nav('downloads');
+  } catch (error) { fail(error); }
+}
+$('bulk-download').onclick = () => bulk('download');
+$('bulk-delete').onclick = () => bulk('delete');
 $('download-form').onsubmit = async e => { e.preventDefault(); try { await request('/api/downloads', { userId: $('download-user').value, guildId: $('download-guild').value, limit: $('download-limit').value ? Number($('download-limit').value) : null }); toast('Download started'); await refresh(); nav('downloads'); } catch (error) { fail(error); } };
 let memberSearchTimer, memberSearchSequence = 0;
 function clearMemberResults() {
@@ -224,7 +263,7 @@ $('member-search').addEventListener('input', () => {
 $('refresh-all').onclick = async () => { if (!confirm('Refresh every tracked user in this server, sequentially?')) return; try { await request('/api/refresh-all', { guildId: $('download-guild').value, limit: $('download-limit').value ? Number($('download-limit').value) : null }); toast('Refresh queued'); await refresh(); nav('downloads'); } catch (e) { fail(e); } };
 $('trivia-guild').addEventListener('change', () => refresh().catch(fail));
 $('config-form').addEventListener('input', e => { if (e.target.form === $('config-form')) $('config-form').dataset.editing = 'true'; });
-$('config-form').onsubmit = async e => { e.preventDefault(); const form=e.currentTarget; try { for (const key of ['specialUserId','specialRoleId']) if (form.elements[key].value !== (key === 'specialUserId' ? state.specialUser.id : state.specialRoleId) && !confirm(`Change ${key}? This can lock you out of admin controls. Continue?`)) return; for (const key of ['replyChancePercent','reactionChanceDenominator','alwaysReplyUserId','nerdEmoji','specialUserId','specialRoleId','guildId']) { const raw=form.elements[key].value; await request('/api/settings',{[key]:['replyChancePercent','reactionChanceDenominator'].includes(key)?Number(raw):key==='guildId'&&!raw?null:raw}); } form.dataset.editing = ''; await refresh(); toast('Configuration saved'); } catch (error) { fail(error); } };
+$('config-form').onsubmit = async e => { e.preventDefault(); const form=e.currentTarget; try { for (const key of ['specialUserId','specialRoleId']) if (form.elements[key].value !== (key === 'specialUserId' ? state.specialUser.id : state.specialRoleId) && !confirm(`Change ${key}? This can lock you out of admin controls. Continue?`)) return; for (const key of ['replyChancePercent','reactionChanceDenominator','downloadConcurrency','alwaysReplyUserId','nerdEmoji','specialUserId','specialRoleId','guildId']) { const raw=form.elements[key].value; await request('/api/settings',{[key]:['replyChancePercent','reactionChanceDenominator','downloadConcurrency'].includes(key)?Number(raw):key==='guildId'&&!raw?null:raw}); } form.dataset.editing = ''; await refresh(); toast('Configuration saved'); } catch (error) { fail(error); } };
 $('config-form').elements.alwaysReplyUserId.addEventListener('input', e => resolveInput(e.target, 'user'));
 $('config-form').elements.specialUserId.addEventListener('input', e => resolveInput(e.target, 'user'));
 $('config-form').elements.specialRoleId.addEventListener('input', e => resolveInput(e.target, 'role'));

@@ -187,6 +187,9 @@ export class DataStore extends EventEmitter {
       DELETE FROM user_messages
       WHERE user_id = ?
     `);
+    this.deleteUserSettingsStmt = this.db.prepare('DELETE FROM user_settings WHERE user_id = ?');
+    this.deleteUserStagingStmt = this.db.prepare('DELETE FROM download_staging_messages WHERE user_id = ?');
+    this.deleteUserTriviaStmt = this.db.prepare('DELETE FROM trivia_scores WHERE user_id = ?');
 
     this.insertMessageStmt = this.db.prepare(`
       INSERT OR IGNORE INTO user_messages (
@@ -428,6 +431,18 @@ export class DataStore extends EventEmitter {
 
   getReactionChanceDenominator() {
     return Number(this.getMetadata('reaction_chance_denominator') ?? this.defaultReactionChanceDenominator);
+  }
+
+  getDownloadConcurrency() {
+    const value = Number(this.getMetadata('download_concurrency') ?? 3);
+    return Number.isInteger(value) && value >= 1 && value <= 10 ? value : 3;
+  }
+
+  setDownloadConcurrency(value) {
+    if (!Number.isInteger(value) || value < 1 || value > 10) throw new RangeError('Download concurrency must be 1 to 10.');
+    this.setMetadata('download_concurrency', String(value));
+    this.emit('change', { type: 'config', key: 'download_concurrency' });
+    return value;
   }
 
   setReactionChanceDenominator(value) {
@@ -765,15 +780,15 @@ export class DataStore extends EventEmitter {
     const normalizedUserId = String(userId);
 
     this.transaction(() => {
-      this.ensureUser(normalizedUserId);
       this.deleteMetadataStmt.run(`download_checkpoint:${normalizedUserId}`);
-      this.deleteUserMessagesStmt.run(normalizedUserId);
-      this.updateTrackedStmt.run(0, nowIso(), normalizedUserId);
-      this.updateMessageCountStmt.run(0, nowIso(), null, normalizedUserId);
+      this.deleteUserStagingStmt.run(normalizedUserId);
+      this.deleteUserTriviaStmt.run(normalizedUserId);
+      this.deleteUserSettingsStmt.run(normalizedUserId); // cascades archived messages
     });
 
     this.trackedUsers.delete(normalizedUserId);
-    this.messageCounts.set(normalizedUserId, 0);
+    this.nerdedUsers.delete(normalizedUserId);
+    this.messageCounts.delete(normalizedUserId);
     this.emit('change', { type: 'user', userId: normalizedUserId });
   }
 

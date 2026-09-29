@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
-import { DownloadCancelledError, downloadUserHistory } from './history-downloader.js';
+import { createSearchLimiter, DownloadCancelledError, downloadUserHistory } from './history-downloader.js';
 
 const CANCEL_PREFIX = 'download-cancel:';
 const RENDER_INTERVAL_MS = 1500;
-const MAX_CONCURRENT_DOWNLOADS = 3;
 
 function formatCount(value) {
   return new Intl.NumberFormat('en-GB').format(value);
@@ -51,6 +50,8 @@ function formatStatus(job) {
     statusLine = 'Cancellation requested. Finishing the current request...';
   } else if (job.status === 'indexing') {
     statusLine = `Discord is still indexing searchable messages. Retrying in ${job.retryAfterSeconds}s...`;
+  } else if (job.status === 'rate_limited') {
+    statusLine = `Waiting ${job.retryAfterSeconds}s before retrying Discord search...`;
   } else if (job.status === 'cancelled') {
     statusLine = 'Download cancelled. Stored archive was left unchanged.';
   } else if (job.status === 'completed') {
@@ -91,6 +92,7 @@ function buildComponents(job, disabled = false) {
             job.status !== 'queued' &&
             job.status !== 'starting' &&
             job.status !== 'indexing' &&
+            job.status !== 'rate_limited' &&
             job.status !== 'cancel_requested'
           ),
         ),
@@ -105,7 +107,7 @@ export function createProgressPublisher(publish, now = Date.now) {
     if (phase === 'progress' && time - (last.get(job.id) ?? -Infinity) < 500) return;
     if (phase === 'progress') last.set(job.id, time);
     if (phase === 'finished') last.delete(job.id);
-    publish({ type: phase, id: job.id, guildId: job.guildId, userId: job.targetUserId, status: job.status, downloadedCount: job.downloadedCount, mediaSkipped: job.mediaSkipped, totalResults: job.totalResults });
+    publish({ type: phase, id: job.id, guildId: job.guildId, userId: job.targetUserId, status: job.status, downloadedCount: job.downloadedCount, mediaSkipped: job.mediaSkipped, totalResults: job.totalResults, retryAfterSeconds: job.retryAfterSeconds, currentMessage: job.currentMessage });
   };
 }
 
@@ -119,6 +121,8 @@ export class DownloadJobManager extends EventEmitter {
     this.jobsByTarget = new Map();
     this.runningCount = 0;
     this.pending = [];
+    this.deletingUsers = new Set();
+    this.searchRequest = createSearchLimiter(client.rest);
     this.publishProgress = createProgressPublisher(change => this.emit('change', change));
   }
 
@@ -151,6 +155,7 @@ export class DownloadJobManager extends EventEmitter {
       lastPageCount: 0,
       retryAfterSeconds: 0,
       documentsIndexed: 0,
+      currentMessage: null,
       status: 'starting',
       errorMessage: null,
       abortController: new AbortController(),
@@ -199,7 +204,24 @@ export class DownloadJobManager extends EventEmitter {
     return { cancelled: true, job };
   }
 
+  async deleteUser(userId) {
+    if (this.deletingUsers.has(userId)) throw new Error('User deletion already in progress.');
+    this.deletingUsers.add(userId);
+    try {
+      const jobs = this.getActiveJobs().filter(job => job.targetUserId === userId);
+      for (const job of jobs) this.cancelJob(job.guildId, userId);
+      await Promise.all(jobs.map(job => job.completion));
+      this.store.deleteUserData(userId);
+    } finally {
+      this.deletingUsers.delete(userId);
+    }
+  }
+
   async start({ interaction, targetUserId, limit }) {
+    if (this.deletingUsers.has(targetUserId)) {
+      await interaction.editReply({ content: 'This user is being deleted. Try again later.' });
+      return null;
+    }
     const existingJob = this.getActiveJob(interaction.guildId, targetUserId);
 
     if (existingJob) {
@@ -234,6 +256,7 @@ export class DownloadJobManager extends EventEmitter {
   }
 
   startHeadless({ guildId, requestedById, targetUserId, limit, onProgress }) {
+    if (this.deletingUsers.has(targetUserId)) return { job: null, created: false };
     const existingJob = this.getActiveJob(guildId, targetUserId);
 
     if (existingJob) {
@@ -296,7 +319,7 @@ export class DownloadJobManager extends EventEmitter {
   }
 
   schedule(job) {
-    if (this.runningCount >= MAX_CONCURRENT_DOWNLOADS) {
+    if (this.runningCount >= this.store.getDownloadConcurrency()) {
       job.status = 'queued';
       this.pending.push(job);
       this.publishProgress(job, 'status');
@@ -305,9 +328,14 @@ export class DownloadJobManager extends EventEmitter {
     this.runningCount++;
     void this.run(job).finally(() => {
       this.runningCount--;
-      const next = this.pending.shift();
-      if (next) this.schedule(next);
+      this.drain();
     });
+  }
+
+  drain() {
+    while (this.pending.length && this.runningCount < this.store.getDownloadConcurrency()) {
+      this.schedule(this.pending.shift());
+    }
   }
 
   async run(job) {
@@ -320,6 +348,7 @@ export class DownloadJobManager extends EventEmitter {
         store: this.store,
         jobId: job.id,
         signal: job.abortController.signal,
+        searchRequest: this.searchRequest,
         onProgress: async ({
           status,
           downloadedCount,
@@ -329,6 +358,7 @@ export class DownloadJobManager extends EventEmitter {
           lastPageCount,
           retryAfterSeconds = 0,
           documentsIndexed = 0,
+          currentMessage = null,
         }) => {
           const oldStatus = job.status;
           if (!job.abortController.signal.aborted) job.status = status;
@@ -339,6 +369,7 @@ export class DownloadJobManager extends EventEmitter {
           job.lastPageCount = lastPageCount;
           job.retryAfterSeconds = retryAfterSeconds;
           job.documentsIndexed = documentsIndexed;
+          if (currentMessage) job.currentMessage = currentMessage;
           this.publishProgress(job, oldStatus === status ? 'progress' : 'status');
 
           await job.onProgress?.(job);

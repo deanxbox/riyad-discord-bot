@@ -48,7 +48,7 @@ export const downloadRefreshAllCommand = {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
 
-      if (downloadJobs.getJobStatus(interaction.guildId, userId)) {
+      if (!store.isTracked(userId) || downloadJobs.getJobStatus(interaction.guildId, userId)) {
         skipped += 1;
         continue;
       }

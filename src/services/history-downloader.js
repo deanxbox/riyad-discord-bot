@@ -2,6 +2,7 @@ import { Routes } from 'discord-api-types/v10';
 
 const SEARCH_INDEX_NOT_READY_CODE = 110000;
 const PAGE_SIZE = 25;
+const TRANSIENT_RETRIES = 3;
 
 export class DownloadCancelledError extends Error {
   constructor(message = 'Download cancelled.') {
@@ -23,6 +24,43 @@ function delay(ms, signal) {
     signal?.addEventListener('abort', cancel, { once: true });
     if (signal?.aborted) cancel();
   });
+}
+
+// One gate for the search endpoint across every job. discord.js REST handles its own 429
+// retries; keep other searches behind it and honor its response/rate-limit events.
+export function createSearchLimiter(rest) {
+  let tail = Promise.resolve();
+  let blockedUntil = 0;
+  let notifyActive = null;
+  const waitFor = ms => {
+    if (!Number.isFinite(ms) || ms <= 0) return;
+    blockedUntil = Math.max(blockedUntil, Date.now() + Math.min(ms, 60000));
+    // Surface discord.js's internal 429 wait to the job currently making the request.
+    Promise.resolve(notifyActive?.(Math.ceil(ms / 1000))).catch(() => {});
+  };
+  rest.on?.('rateLimited', data => {
+    if (data.global || data.route?.includes('/messages/search')) waitFor(data.retryAfter);
+  });
+  rest.on?.('response', (request, response) => {
+    if (!request?.path?.includes('/messages/search')) return;
+    const headers = response.headers;
+    if (response.status === 429) waitFor(Number(headers.get('retry-after')) * 1000);
+    else if (headers.get('x-ratelimit-remaining') === '0') waitFor(Number(headers.get('x-ratelimit-reset-after')) * 1000);
+  });
+  return async (run, signal, onWait = async () => {}) => {
+    const previous = tail;
+    let release;
+    tail = new Promise(resolve => { release = resolve; });
+    try {
+      await previous;
+      throwIfCancelled(signal);
+      const remaining = Math.max(0, blockedUntil - Date.now());
+      if (remaining) { await onWait(Math.ceil(remaining / 1000)); await delay(remaining, signal); }
+      throwIfCancelled(signal);
+      notifyActive = onWait;
+      return await run();
+    } finally { notifyActive = null; release(); }
+  };
 }
 
 function throwIfCancelled(signal) {
@@ -93,13 +131,32 @@ function buildSearchQuery({ targetUserId, limit, maxId }) {
   return params;
 }
 
-async function fetchSearchPage({ client, guildId, targetUserId, pageSize, maxId, signal, onIndexing }) {
+async function fetchSearchPage({ client, guildId, targetUserId, pageSize, maxId, signal, onIndexing, onWait, searchRequest }) {
+  let failures = 0;
   while (true) {
     throwIfCancelled(signal);
 
-    const response = await client.rest.get(Routes.guildMessagesSearch(guildId), {
-      query: buildSearchQuery({ targetUserId, limit: pageSize, maxId }),
-    });
+    let response;
+    try {
+      response = await (searchRequest
+        ? searchRequest(() => client.rest.get(Routes.guildMessagesSearch(guildId), {
+          query: buildSearchQuery({ targetUserId, limit: pageSize, maxId }),
+        }), signal, onWait)
+        : client.rest.get(Routes.guildMessagesSearch(guildId), {
+          query: buildSearchQuery({ targetUserId, limit: pageSize, maxId }),
+        }));
+    } catch (error) {
+      throwIfCancelled(signal);
+      const status = error.status ?? error.statusCode ?? error.rawError?.status;
+      if (failures >= TRANSIENT_RETRIES || (status && status !== 429 && status < 500)) throw error;
+      const retry = status === 429 ? Number(error.retry_after ?? error.rawError?.retry_after) * 1000 : NaN;
+      const base = Number.isFinite(retry) && retry > 0 ? Math.min(retry, 60000) : Math.min(500 * 2 ** failures, 4000);
+      const waitMs = base + Math.random() * Math.min(1000, base / 4); // jitter
+      failures++;
+      await onWait(Math.ceil(waitMs / 1000));
+      await delay(waitMs, signal);
+      continue;
+    }
 
     if (response?.code !== SEARCH_INDEX_NOT_READY_CODE) {
       return response;
@@ -128,6 +185,7 @@ export async function downloadUserHistory({
   jobId,
   signal,
   onProgress,
+  searchRequest,
 }) {
   let downloadedCount = 0;
   let mediaSkipped = 0;
@@ -155,6 +213,12 @@ export async function downloadUserHistory({
         pageSize,
         maxId,
         signal,
+        searchRequest,
+        onWait: async retryAfterSeconds => onProgress({
+          status: 'rate_limited', downloadedCount, mediaSkipped,
+          totalResults: checkpoint ? null : discoveredTotalResults, requestsMade,
+          lastPageCount: 0, retryAfterSeconds,
+        }),
         onIndexing: async ({ retryAfterSeconds, documentsIndexed }) => {
           await onProgress({
             status: 'indexing',
@@ -219,6 +283,11 @@ export async function downloadUserHistory({
         totalResults: checkpoint ? null : discoveredTotalResults,
         requestsMade,
         lastPageCount: insertedCount,
+        currentMessage: targetMessages.at(-1) ? {
+          author: targetMessages.at(-1).author?.username || targetUserId,
+          timestamp: targetMessages.at(-1).timestamp ?? targetMessages.at(-1).createdAt ?? null,
+          content: String(targetMessages.at(-1).content ?? '').slice(0, 180),
+        } : null,
       });
 
       if (!maxId || reachedCheckpoint ||

@@ -114,13 +114,15 @@ try {
   const jobs = Array.from({ length: 4 }, (_, i) => manager.startHeadless({
     guildId, requestedById: userId, targetUserId: String(400 + i), limit: null,
   }).job);
-  assert.equal(peak, 3, 'only three jobs can request search concurrently');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(manager.runningCount, 3, 'only three jobs run concurrently');
+  assert.equal(peak, 1, 'shared limiter serializes search requests across jobs');
   assert.equal(jobs[3].status, 'queued');
   assert.equal(manager.cancelJob(guildId, '403').cancelled, true);
   assert.equal((await jobs[3].completion).cancelled, true, 'queued cancellation resolves without waiting for a slot');
   release();
   await Promise.all(jobs.slice(0, 3).map(job => job.completion));
-  assert.equal(peak, 3);
+  assert.equal(peak, 1);
   console.log('Download self-check passed: paging, incremental refresh, cancellation, and bounded jobs.');
 } finally {
   store.close();

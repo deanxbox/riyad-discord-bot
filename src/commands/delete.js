@@ -12,17 +12,17 @@ export const deleteCommand = {
         .setRequired(true),
     ),
 
-  async execute({ interaction, store, config }) {
+  async execute({ interaction, downloadJobs, config }) {
     if (!(await requireAdmin(interaction, config))) {
       return;
     }
 
     const targetUser = interaction.options.getUser('user', true);
-    store.deleteUserData(targetUser.id);
+    await interaction.deferReply({ ephemeral: true });
+    await downloadJobs.deleteUser(targetUser.id);
 
-    await interaction.reply({
-      content: `Deleted stored messages for <@${targetUser.id}> and disabled tracking.`,
-      ephemeral: true,
+    await interaction.editReply({
+      content: `Deleted all saved data for <@${targetUser.id}> and stopped active downloads.`,
     });
   },
 };

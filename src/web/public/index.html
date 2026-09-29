@@ -34,6 +34,7 @@
       <section id="users" class="tab">
         <article class="card"><div class="row between"><div><h2>Tracked users</h2><p class="muted">Manage archived messages and reply behavior.</p></div><button id="addUser" class="primary">＋ Add user</button></div>
           <div class="filters"><label class="search-label">Search users<input id="search" type="search" placeholder="Name or ID"></label><label>Sort by<select id="sort"><option value="name">Name</option><option value="count">Message count</option><option value="last">Last download</option></select></label></div>
+          <div class="row bulk-actions"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span><button id="bulk-download" type="button">Download selected</button><button id="bulk-delete" type="button" class="danger">Delete selected</button></div>
           <div id="user-list" class="user-list"></div></article>
       </section>
       <section id="downloads" class="tab">
@@ -48,6 +49,7 @@
       <section id="config" class="tab"><article class="card"><h2>Runtime configuration</h2><p class="muted">Only safe live settings are editable. Secrets and network/database settings remain environment-only.</p><form id="config-form" class="form-grid">
         <label>Reply chance (%)<input name="replyChancePercent" type="number" min="0" max="100" required></label>
         <label>Reaction denominator (1 in N)<input name="reactionChanceDenominator" type="number" min="1" max="1000000" required></label>
+        <label>Concurrent downloads (1–10)<input name="downloadConcurrency" type="number" min="1" max="10" required></label>
         <label>Always-reply user ID<input name="alwaysReplyUserId" required pattern="[0-9]{17,20}"><small data-resolved="alwaysReplyUserId"></small></label>
         <label>Nerd emoji<input name="nerdEmoji" maxlength="100" required></label>
         <label>Special admin user ID<input name="specialUserId" required pattern="[0-9]{17,20}"><small data-resolved="specialUserId"></small></label>

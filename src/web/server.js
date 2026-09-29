@@ -22,6 +22,7 @@ export function isStaticPathSafe(value) { return staticFiles.has(value); }
 export function validateSetting(key, value) {
   if (key === 'replyChancePercent' && Number.isInteger(value) && value >= 0 && value <= 100) return value;
   if (key === 'reactionChanceDenominator' && Number.isInteger(value) && value >= 1 && value <= 1000000) return value;
+  if (key === 'downloadConcurrency' && Number.isInteger(value) && value >= 1 && value <= 10) return value;
   if (['alwaysReplyUserId', 'specialUserId', 'specialRoleId'].includes(key) && isSnowflake(value)) return value;
   if (key === 'guildId' && (value === null || isSnowflake(value))) return value;
   if (key === 'nerdEmoji' && typeof value === 'string' && value.trim() && value.length <= 100) return value.trim();
@@ -219,7 +220,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         }));
         const jobs = await Promise.all(downloadJobs.getActiveJobs().map(async j => ({
           id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById),
-          status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit,
+          status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit, retryAfterSeconds: j.retryAfterSeconds, currentMessage: j.currentMessage,
         })));
         const queue = await Promise.all(nextReplyQueue.list().map(async ({ targetUserId, createdByUserId, ...q }) => ({
           ...q, target: await resolved(resolveUser, targetUserId), createdBy: await resolveUser(createdByUserId),
@@ -228,6 +229,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         json(response, 200, {
           users, jobs, queue, leaderboard,
           replyChancePercent: store.getReplyChancePercent(), reactionChanceDenominator: store.getReactionChanceDenominator(),
+          downloadConcurrency: store.getDownloadConcurrency(),
           alwaysReplyUser: await resolveUser(config.alwaysReplyUserId), nerdEmoji: config.nerdEmoji,
           specialUser: await resolveUser(config.specialUserId), specialRoleId: config.specialRoleId,
           specialRole: [...(client?.guilds?.cache?.values?.() || [])].map(g => g.roles.cache.get(config.specialRoleId)).find(Boolean)?.name || config.specialRoleId,
@@ -256,6 +258,10 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         json(response, 200, { members: members.map(member => userObject(member.id, member.user, member)) }); return;
       }
       const userMatch = /^\/api\/users\/(\d{17,20})$/.exec(pathname);
+      if (userMatch && request.method === 'DELETE') {
+        await downloadJobs.deleteUser(userMatch[1]);
+        json(response, 200, { ok: true }); return;
+      }
       if (userMatch && request.method === 'POST') {
         const data = await readBody(request);
         if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(k => !['tracked', 'nerded', 'replyChanceOverride', 'deleteMessages'].includes(k)) ||
@@ -276,6 +282,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         const [key] = Object.keys(data), value = validateSetting(key, data[key]);
         if (key === 'replyChancePercent') store.setReplyChancePercent(value);
         else if (key === 'reactionChanceDenominator') store.setReactionChanceDenominator(value);
+        else if (key === 'downloadConcurrency') { store.setDownloadConcurrency(value); downloadJobs.drain(); }
         else if (key === 'alwaysReplyUserId') config.alwaysReplyUserId = store.setAlwaysReplyUserId(value);
         else if (key === 'nerdEmoji') config.nerdEmoji = store.setNerdEmoji(value);
         else if (key === 'specialUserId') config.specialUserId = store.setDashboardSetting(key, value);
@@ -284,8 +291,27 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         json(response, 200, { ok: true }); return;
       }
       if (pathname === '/api/downloads' && request.method === 'GET') {
-        const jobs = await Promise.all(downloadJobs.getActiveJobs().map(async j => ({ id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById), status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit })));
+        const jobs = await Promise.all(downloadJobs.getActiveJobs().map(async j => ({ id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById), status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit, retryAfterSeconds: j.retryAfterSeconds, currentMessage: j.currentMessage })));
         json(response, 200, { jobs }); return;
+      }
+      if (pathname === '/api/users/bulk' && request.method === 'POST') {
+        const data = await readBody(request);
+        if (!data || !['download', 'delete'].includes(data.action) ||
+          !Array.isArray(data.userIds) || !data.userIds.length || data.userIds.length > 1000 ||
+          new Set(data.userIds).size !== data.userIds.length || !data.userIds.every(isSnowflake) ||
+          data.userIds.some(id => !store.listUserIds().includes(id)) ||
+          (data.action === 'download' && (!isSnowflake(data.guildId) || !client?.guilds?.cache?.has(data.guildId)))) throw new RangeError('Invalid bulk request.');
+        if (data.action === 'delete') {
+          for (const id of data.userIds) await downloadJobs.deleteUser(id);
+          json(response, 200, { deleted: data.userIds.length });
+        } else {
+          let started = 0;
+          for (const id of data.userIds) {
+            if (downloadJobs.startHeadless({ guildId: data.guildId, targetUserId: id, requestedById: config.specialUserId, limit: null }).created) started++;
+          }
+          json(response, 202, { started, skipped: data.userIds.length - started });
+        }
+        return;
       }
       if (pathname === '/api/downloads' && request.method === 'POST') {
         const data = await readBody(request);
@@ -317,7 +343,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         void (async () => {
           for (const [i, userId] of store.listTrackedUsers().entries()) {
             if (i) await new Promise(resolve => setTimeout(resolve, 500));
-            if (!downloadJobs.getJobStatus(data.guildId, userId)) {
+            if (store.isTracked(userId) && !downloadJobs.getJobStatus(data.guildId, userId)) {
               const { job, created } = downloadJobs.startHeadless({ guildId: data.guildId, requestedById: config.specialUserId, targetUserId: userId, limit: data.limit ?? null });
               if (created) await job.completion;
             }
