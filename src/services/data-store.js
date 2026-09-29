@@ -438,6 +438,38 @@ export class DataStore extends EventEmitter {
     return Number.isInteger(value) && value >= 1 && value <= 10 ? value : 3;
   }
 
+  getTriviaOptionCount() {
+    const value = Number(this.getMetadata('trivia_option_count') ?? 4);
+    return Number.isInteger(value) && value >= 2 && value <= 10 ? value : 4;
+  }
+
+  setTriviaOptionCount(value) {
+    if (!Number.isInteger(value) || value < 2 || value > 10) throw new RangeError('Trivia options must be 2 to 10.');
+    this.setMetadata('trivia_option_count', String(value));
+    return value;
+  }
+
+  getReplyDelaySeconds() {
+    const value = Number(this.getMetadata('reply_delay_seconds') ?? 0);
+    return Number.isFinite(value) && value >= 0 && value <= 60 ? value : 0;
+  }
+
+  setReplyDelaySeconds(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 60) throw new RangeError('Reply delay must be 0 to 60 seconds.');
+    this.setMetadata('reply_delay_seconds', String(value));
+    return value;
+  }
+
+  getTypingIndicator() {
+    return this.getMetadata('typing_indicator') === 'true';
+  }
+
+  setTypingIndicator(value) {
+    if (typeof value !== 'boolean') throw new RangeError('Typing indicator must be true or false.');
+    this.setMetadata('typing_indicator', String(value));
+    return value;
+  }
+
   setDownloadConcurrency(value) {
     if (!Number.isInteger(value) || value < 1 || value > 10) throw new RangeError('Download concurrency must be 1 to 10.');
     this.setMetadata('download_concurrency', String(value));

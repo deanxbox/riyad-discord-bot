@@ -1,5 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { isTriviaExpired } from '../services/data-store.js';
+import { getGuildMembers } from '../services/guild-members.js';
 
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
@@ -28,11 +29,10 @@ export const triviaCommand = {
     }
 
     await interaction.deferReply();
-    await guild.members.fetch();
+    const members = await getGuildMembers(guild);
 
-    const memberIds = new Set(guild.members.cache.keys());
     const eligibleIds = store.listTrackedUsers().filter(
-      id => memberIds.has(id) && store.getMessageCount(id) > 0,
+      id => members.has(id) && store.getMessageCount(id) > 0,
     );
 
     if (eligibleIds.length < 1) {
@@ -48,24 +48,24 @@ export const triviaCommand = {
       return;
     }
 
-    const distractorPool = guild.members.cache
-      .filter(m => !m.user.bot && m.id !== correctUserId)
-      .map(m => m.id);
+    const optionCount = store.getTriviaOptionCount();
+    const distractorPool = eligibleIds.filter(id => id !== correctUserId);
 
-    if (distractorPool.length < 3) {
-      await interaction.editReply('Not enough members in this server to generate options (need at least 4 non-bot members).');
+    if (distractorPool.length < optionCount - 1) {
+      await interaction.editReply(`Not enough users with downloaded messages to generate options (need at least ${optionCount}).`);
       return;
     }
 
     const shuffledPool = fisherYates([...distractorPool]);
-    const distractorIds = shuffledPool.slice(0, 3);
+    const distractorIds = shuffledPool.slice(0, optionCount - 1);
     const optionUserIds = fisherYates([correctUserId, ...distractorIds]);
 
     store.setActiveTriviaQuestion(guild.id, { correctUserId, messageContent, optionUserIds });
 
     await interaction.editReply({
+      content: mediaLinks(messageContent) || undefined,
       embeds: [buildTriviaEmbed(messageContent)],
-      components: buildTriviaComponents(optionUserIds, guild.members.cache),
+      components: buildTriviaComponents(optionUserIds, members),
     });
   },
 };
@@ -122,7 +122,12 @@ export async function handleTriviaButton(interaction, { store }) {
   }
 }
 
+const IMAGE_URL = /https?:\/\/\S+?\.(?:gif|png|jpe?g|webp)(?:\?\S*)?(?=\s|$)/i;
+// Other links (tenor, giphy, video) can't go in an embed image; post them as content so Discord unfurls them.
+const mediaLinks = text => (text.match(/https?:\/\/\S+/g) ?? []).filter(u => !IMAGE_URL.test(u)).join('\n');
+
 function buildTriviaEmbed(messageContent, { solved = false, winnerName, correctName } = {}) {
+  const image = messageContent.match(IMAGE_URL)?.[0];
   const display = messageContent.length > 900 ? `${messageContent.slice(0, 900)}…` : messageContent;
 
   if (solved) {
@@ -134,6 +139,7 @@ function buildTriviaEmbed(messageContent, { solved = false, winnerName, correctN
         `The answer was **${correctName}**.`,
       )
       .setColor(0x57F287)
+      .setImage(image ?? null)
       .setFooter({ text: 'Use /scoreboard to see the leaderboard' })
       .setTimestamp();
   }
@@ -142,6 +148,7 @@ function buildTriviaEmbed(messageContent, { solved = false, winnerName, correctN
     .setTitle('🎭 Trivia Time!')
     .setDescription(`**Who said this?**\n\n>>> ${display}`)
     .setColor(0x5865F2)
+    .setImage(image ?? null)
     .setFooter({ text: 'Each player gets one attempt — first correct answer wins a point!' })
     .setTimestamp();
 }
@@ -149,7 +156,9 @@ function buildTriviaEmbed(messageContent, { solved = false, winnerName, correctN
 export function buildTriviaComponents(optionUserIds, membersCache, { disabled = false, correctUserId = null } = {}) {
   const buttons = optionUserIds.map(userId => {
     const member = membersCache.get(userId);
-    const label = (member?.displayName ?? `User …${userId.slice(-4)}`).slice(0, 80);
+    const nick = member?.displayName ?? `User …${userId.slice(-4)}`;
+    const profile = member?.user?.globalName ?? member?.user?.username;
+    const label = (profile && profile !== nick ? `${nick} (${profile})` : nick).slice(0, 80);
 
     let style = ButtonStyle.Primary;
     if (disabled) {
@@ -163,7 +172,9 @@ export function buildTriviaComponents(optionUserIds, membersCache, { disabled = 
       .setDisabled(disabled);
   });
 
-  return [new ActionRowBuilder().addComponents(buttons)];
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  return rows;
 }
 
 function fisherYates(arr) {

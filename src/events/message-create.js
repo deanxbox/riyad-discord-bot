@@ -63,6 +63,15 @@ export async function handleMessageCreate(message, { store, config, nextReplyQue
     const reply = queuedReply?.message ?? store.getRandomMessage(userId);
 
     if (reply) {
+      const delayMs = store.getReplyDelaySeconds() * 1000;
+      if (store.getTypingIndicator() || delayMs > 0) {
+        // Typing lasts ~10s in Discord, so refresh it every 8s while waiting.
+        for (let left = delayMs; ; left -= 8000) {
+          if (store.getTypingIndicator()) await message.channel.sendTyping().catch(() => {});
+          await new Promise(r => setTimeout(r, Math.max(0, Math.min(left, 8000))));
+          if (left <= 8000) break;
+        }
+      }
       await message.reply({
         content: truncateReply(reply),
         allowedMentions: { repliedUser: false },
