@@ -1,0 +1,128 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { DataStore } from '../src/services/data-store.js';
+import { DownloadJobManager } from '../src/services/download-jobs.js';
+import { DownloadCancelledError, downloadUserHistory } from '../src/services/history-downloader.js';
+
+const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'riyad-download-'));
+const store = new DataStore(path.join(dir, 'test.sqlite'));
+const guildId = '100', userId = '200';
+const message = (id, content = `text-${id}`) => ({
+  id: String(id), author: { id: userId }, content, channel_id: '300',
+  timestamp: '2026-01-01T00:00:00.000Z',
+});
+
+try {
+  let messages = Array.from({ length: 51 }, (_, i) => message(151 - i));
+  const routes = [];
+  const client = { rest: { get: async (route, { query: params }) => {
+    assert.equal(route.includes('?'), false, 'all pages must share a bucket route');
+    routes.push(params);
+    assert.ok(Number(params.get('limit')) <= 25, 'do not exceed the existing supported page size');
+    const page = messages.filter(item => !params.has('max_id') || BigInt(item.id) < BigInt(params.get('max_id')))
+      .slice(0, Number(params.get('limit')));
+    return { total_results: messages.length, messages: page.map(item => [item]) };
+  } } };
+  const download = (jobId, limit = null, onProgress = async () => {}) => downloadUserHistory({
+    client, guildId, targetUserId: userId, limit, store, jobId, onProgress,
+  });
+
+  assert.equal((await download('full')).downloadedCount, 51);
+  assert.equal(routes.length, 4, 'full search exhausts the cursor, including a final empty page');
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), '151');
+  messages = [message(153), { ...message(152, ''), attachments: [{}] }, ...messages];
+  routes.length = 0;
+  assert.equal((await download('incremental')).downloadedCount, 52);
+  assert.equal(routes.length, 1, 'refresh stops at the last complete checkpoint');
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), '153');
+  assert.equal(store.getUserSummary(userId).messageCount, 52);
+  assert.equal(store.getUserSummary(userId).mediaSkipped, 1);
+  assert.ok(store.exportUserMessages(userId).some(item => item.message_id === '101'), 'older messages survive a refresh');
+
+  const controller = new AbortController();
+  messages = [message(154), ...messages];
+  await assert.rejects(downloadUserHistory({
+    client, guildId, targetUserId: userId, limit: null, store, jobId: 'cancelled',
+    signal: controller.signal, onProgress: async () => controller.abort(),
+  }), DownloadCancelledError);
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), '153', 'cancel cannot advance the checkpoint');
+  assert.equal(store.getUserSummary(userId).messageCount, 52, 'cancel cannot replace or partially merge the archive');
+  assert.equal((await download('limited', 1)).downloadedCount, 1);
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), null, 'a limited replacement is not complete');
+  routes.length = 0;
+  assert.equal((await download('full-again')).downloadedCount, 53);
+  assert.equal(routes.length, 4, 'a later full run scans historical pages after a limited replacement');
+
+  const contextual = Array.from({ length: 30 }, (_, i) => ({
+    ...message(300 - i), author: { id: '201' },
+  }));
+  const cursors = [];
+  const contextClient = { rest: { get: async (route, { query: params }) => {
+    assert.equal(route.includes('?'), false);
+    cursors.push(params.get('max_id'));
+    const page = contextual.filter(item => !params.has('max_id') || BigInt(item.id) < BigInt(params.get('max_id')))
+      .slice(0, 25);
+    return { total_results: 30, messages: [...page.map(item => [item]), ...(page.length ? [[message(1)]] : [])] };
+  } } };
+  assert.equal((await downloadUserHistory({
+    client: contextClient, guildId, targetUserId: '201', limit: null, store,
+    jobId: 'context', onProgress: async () => {},
+  })).downloadedCount, 30);
+  assert.equal(cursors[1], '276', 'search context must not move the cursor past matching messages');
+  store.incrementMediaSkipped(userId);
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), null,
+    'unidentified live media invalidates a checkpoint to prevent double counting');
+  routes.length = 0;
+  assert.equal((await download('after-live-media')).mediaSkipped, 1);
+  assert.equal(routes.length, 4, 'a checkpoint invalidated by live media forces a complete scan');
+  const previousCheckpoint = store.getUserDownloadCheckpoint(userId, guildId);
+  const fullMessages = messages;
+  messages = [message(155)];
+  await download('sparse-search');
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), previousCheckpoint,
+    'an incomplete search must not advance beyond unseen older messages');
+  assert.equal(store.getUserSummary(userId).messageCount, 54, 'partial search still safely merges new messages');
+  messages = [message(155), ...fullMessages];
+
+  let indexingCalls = 0;
+  const indexingAbort = new AbortController();
+  await assert.rejects(downloadUserHistory({
+    client: { rest: { get: async () => {
+      indexingCalls++;
+      return { code: 110000, retry_after: 60, documents_indexed: 10 };
+    } } },
+    guildId, targetUserId: userId, limit: null, store, jobId: 'indexing',
+    signal: indexingAbort.signal, onProgress: async () => indexingAbort.abort(),
+  }), DownloadCancelledError);
+  assert.equal(indexingCalls, 1, 'indexing backoff must stop promptly when cancelled');
+
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let inFlight = 0, peak = 0;
+  const manager = new DownloadJobManager({
+    client: { rest: { get: async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await gate;
+      inFlight--;
+      return { total_results: 0, messages: [] };
+    } } },
+    config: {}, store,
+  });
+  const jobs = Array.from({ length: 4 }, (_, i) => manager.startHeadless({
+    guildId, requestedById: userId, targetUserId: String(400 + i), limit: null,
+  }).job);
+  assert.equal(peak, 3, 'only three jobs can request search concurrently');
+  assert.equal(jobs[3].status, 'queued');
+  assert.equal(manager.cancelJob(guildId, '403').cancelled, true);
+  assert.equal((await jobs[3].completion).cancelled, true, 'queued cancellation resolves without waiting for a slot');
+  release();
+  await Promise.all(jobs.slice(0, 3).map(job => job.completion));
+  assert.equal(peak, 3);
+  console.log('Download self-check passed: paging, incremental refresh, cancellation, and bounded jobs.');
+} finally {
+  store.close();
+  await fs.rm(dir, { recursive: true, force: true });
+}

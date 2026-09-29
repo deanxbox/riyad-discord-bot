@@ -10,9 +10,18 @@ export class DownloadCancelledError extends Error {
   }
 }
 
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', cancel);
+      resolve();
+    }, ms);
+    function cancel() {
+      clearTimeout(timer);
+      reject(new DownloadCancelledError());
+    }
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) cancel();
   });
 }
 
@@ -81,33 +90,32 @@ function buildSearchQuery({ targetUserId, limit, maxId }) {
     params.set('max_id', maxId);
   }
 
-  return params.toString();
+  return params;
 }
 
 async function fetchSearchPage({ client, guildId, targetUserId, pageSize, maxId, signal, onIndexing }) {
   while (true) {
     throwIfCancelled(signal);
 
-    const route = `${Routes.guildMessagesSearch(guildId)}?${buildSearchQuery({
-      targetUserId,
-      limit: pageSize,
-      maxId,
-    })}`;
-
-    const response = await client.rest.get(route);
+    const response = await client.rest.get(Routes.guildMessagesSearch(guildId), {
+      query: buildSearchQuery({ targetUserId, limit: pageSize, maxId }),
+    });
 
     if (response?.code !== SEARCH_INDEX_NOT_READY_CODE) {
       return response;
     }
 
-    const retryAfterSeconds = Number(response.retry_after ?? 0);
+    const retryAfterSeconds = Number(response.retry_after ?? 1);
+    if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 0 || retryAfterSeconds > 2147483) {
+      throw new Error('Invalid Discord search indexing retry_after.');
+    }
 
     await onIndexing({
       retryAfterSeconds,
       documentsIndexed: Number(response.documents_indexed ?? 0),
     });
 
-    await delay(Math.max(250, retryAfterSeconds * 1000));
+    await delay(Math.max(250, retryAfterSeconds * 1000), signal);
   }
 }
 
@@ -127,7 +135,12 @@ export async function downloadUserHistory({
   let discoveredTotalResults = null;
   let requestsMade = 0;
   let maxId = null;
+  let newestId = null;
+  const checkpoint = limit === null ? store.getUserDownloadCheckpoint(targetUserId, guildId) : null;
+  let exhausted = false;
+  let reachedCheckpoint = false;
 
+  throwIfCancelled(signal);
   store.beginStagedUserDownload(jobId, targetUserId);
 
   try {
@@ -147,7 +160,7 @@ export async function downloadUserHistory({
             status: 'indexing',
             downloadedCount,
             mediaSkipped,
-            totalResults: discoveredTotalResults,
+            totalResults: checkpoint ? null : discoveredTotalResults,
             requestsMade,
             lastPageCount: 0,
             retryAfterSeconds,
@@ -155,6 +168,7 @@ export async function downloadUserHistory({
           });
         },
       });
+      throwIfCancelled(signal);
 
       requestsMade += 1;
 
@@ -165,55 +179,72 @@ export async function downloadUserHistory({
       const searchMessages = flattenSearchMessages(response.messages);
 
       if (searchMessages.length === 0) {
+        exhausted = true;
         await onProgress({
           status: 'running',
           downloadedCount,
           mediaSkipped,
-          totalResults: discoveredTotalResults,
+          totalResults: checkpoint ? null : discoveredTotalResults,
           requestsMade,
           lastPageCount: 0,
         });
         break;
       }
 
-      const targetMessages = searchMessages.filter((message) => message?.author?.id === targetUserId).slice(0, pageSize);
+      const pageMessages = searchMessages.filter((message) => message?.author?.id === targetUserId).slice(0, pageSize);
+      if (pageMessages.length === 0) {
+        throw new Error('Discord search returned no messages from the requested author.');
+      }
+      newestId ??= pageMessages[0].id;
+      const targetMessages = checkpoint
+        ? pageMessages.filter((message) => BigInt(message.id) > BigInt(checkpoint))
+        : pageMessages;
       scannedCount += targetMessages.length;
       const matchingMessages = targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'text').map(toStoredMessage);
       mediaSkipped += targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'media-only').length;
 
       const insertedCount = store.addStagedDownloadedMessages(jobId, targetUserId, matchingMessages);
       downloadedCount += insertedCount;
-      maxId = searchMessages.at(-1)?.id ?? null;
+      const nextMaxId = pageMessages.at(-1)?.id ?? null;
+      if (maxId && nextMaxId && BigInt(nextMaxId) >= BigInt(maxId)) {
+        throw new Error('Discord search pagination did not advance.');
+      }
+      maxId = nextMaxId;
+      reachedCheckpoint = Boolean(checkpoint && maxId && BigInt(maxId) <= BigInt(checkpoint));
 
       await onProgress({
         status: 'running',
         downloadedCount,
         mediaSkipped,
-        totalResults: discoveredTotalResults,
+        totalResults: checkpoint ? null : discoveredTotalResults,
         requestsMade,
         lastPageCount: insertedCount,
       });
 
-      const targetTotal = limit === null
-        ? discoveredTotalResults
-        : discoveredTotalResults === null
-          ? limit
-          : Math.min(discoveredTotalResults, limit);
-
-      if (!maxId || (targetTotal !== null && scannedCount >= targetTotal)) {
+      if (!maxId || reachedCheckpoint ||
+          (limit !== null && scannedCount >= limit)) {
         break;
       }
     }
 
     throwIfCancelled(signal);
 
-    const finalCount = store.commitStagedUserDownload(jobId, targetUserId, mediaSkipped);
+    const finalCount = store.commitStagedUserDownload(jobId, targetUserId, mediaSkipped, {
+      guildId,
+      checkpoint,
+      newestId: limit === null &&
+        (reachedCheckpoint || (!checkpoint && exhausted &&
+          (discoveredTotalResults === null || scannedCount >= discoveredTotalResults)))
+        ? newestId : null,
+    });
+    const finalMediaSkipped = store.getUserSummary(targetUserId).mediaSkipped;
 
     return {
       downloadedCount: finalCount,
-      mediaSkipped,
-      totalResults: discoveredTotalResults,
+      mediaSkipped: finalMediaSkipped,
+      totalResults: checkpoint ? finalCount + finalMediaSkipped : discoveredTotalResults,
       requestsMade,
+      incremental: Boolean(checkpoint),
     };
   } catch (error) {
     store.discardStagedUserDownload(jobId);

@@ -5,6 +5,7 @@ import { DownloadCancelledError, downloadUserHistory } from './history-downloade
 
 const CANCEL_PREFIX = 'download-cancel:';
 const RENDER_INTERVAL_MS = 1500;
+const MAX_CONCURRENT_DOWNLOADS = 3;
 
 function formatCount(value) {
   return new Intl.NumberFormat('en-GB').format(value);
@@ -44,6 +45,8 @@ function formatStatus(job) {
 
   if (job.status === 'running') {
     statusLine = "Searching Discord for that user's messages...";
+  } else if (job.status === 'queued') {
+    statusLine = 'Waiting for an available download slot...';
   } else if (job.status === 'cancel_requested') {
     statusLine = 'Cancellation requested. Finishing the current request...';
   } else if (job.status === 'indexing') {
@@ -51,7 +54,7 @@ function formatStatus(job) {
   } else if (job.status === 'cancelled') {
     statusLine = 'Download cancelled. Stored archive was left unchanged.';
   } else if (job.status === 'completed') {
-    statusLine = 'Download completed and archive replaced.';
+    statusLine = job.incremental ? 'Download completed and archive updated.' : 'Download completed and archive replaced.';
   } else if (job.status === 'failed') {
     statusLine = `Download failed: ${job.errorMessage}`;
   }
@@ -70,7 +73,7 @@ function formatStatus(job) {
     'Source: Discord guild search API filtered by author ID',
     job.status === 'completed' || job.status === 'cancelled'
       ? null
-      : 'The existing saved archive will only be replaced if this download finishes successfully.',
+      : 'The saved archive will only change if this download finishes successfully.',
   ].filter(Boolean).join('\n');
 }
 
@@ -85,6 +88,7 @@ function buildComponents(job, disabled = false) {
           disabled ||
           (
             job.status !== 'running' &&
+            job.status !== 'queued' &&
             job.status !== 'starting' &&
             job.status !== 'indexing' &&
             job.status !== 'cancel_requested'
@@ -113,6 +117,8 @@ export class DownloadJobManager extends EventEmitter {
     this.store = store;
     this.jobs = new Map();
     this.jobsByTarget = new Map();
+    this.runningCount = 0;
+    this.pending = [];
     this.publishProgress = createProgressPublisher(change => this.emit('change', change));
   }
 
@@ -182,6 +188,11 @@ export class DownloadJobManager extends EventEmitter {
     job.status = 'cancel_requested';
     this.publishProgress(job, 'status');
     job.abortController.abort();
+    const queuedIndex = this.pending.indexOf(job);
+    if (queuedIndex !== -1) {
+      this.pending.splice(queuedIndex, 1);
+      void this.run(job);
+    }
 
     void this.render(job, { force: true });
 
@@ -217,7 +228,7 @@ export class DownloadJobManager extends EventEmitter {
 
     job.progressMessage = await interaction.fetchReply();
 
-    void this.run(job);
+    this.schedule(job);
 
     return job;
   }
@@ -241,7 +252,7 @@ export class DownloadJobManager extends EventEmitter {
     this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
     this.publishProgress(job, 'created');
 
-    void this.run(job);
+    this.schedule(job);
 
     return { job, created: true };
   }
@@ -278,13 +289,25 @@ export class DownloadJobManager extends EventEmitter {
       return true;
     }
 
-    job.status = 'cancel_requested';
-    this.publishProgress(job, 'status');
-    job.abortController.abort();
-
     await interaction.deferUpdate();
+    this.cancelJob(job.guildId, job.targetUserId);
     await this.render(job, { force: true });
     return true;
+  }
+
+  schedule(job) {
+    if (this.runningCount >= MAX_CONCURRENT_DOWNLOADS) {
+      job.status = 'queued';
+      this.pending.push(job);
+      this.publishProgress(job, 'status');
+      return;
+    }
+    this.runningCount++;
+    void this.run(job).finally(() => {
+      this.runningCount--;
+      const next = this.pending.shift();
+      if (next) this.schedule(next);
+    });
   }
 
   async run(job) {
@@ -308,7 +331,7 @@ export class DownloadJobManager extends EventEmitter {
           documentsIndexed = 0,
         }) => {
           const oldStatus = job.status;
-          job.status = status;
+          if (!job.abortController.signal.aborted) job.status = status;
           job.downloadedCount = downloadedCount;
           job.mediaSkipped = mediaSkipped;
           job.totalResults = totalResults ?? job.totalResults;
@@ -326,6 +349,7 @@ export class DownloadJobManager extends EventEmitter {
       job.status = 'completed';
       job.downloadedCount = result.downloadedCount;
       job.mediaSkipped = result.mediaSkipped;
+      job.incremental = result.incremental;
       job.totalResults = result.totalResults ?? job.totalResults;
       job.requestsMade = result.requestsMade;
       job.lastPageCount = 0;

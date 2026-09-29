@@ -244,6 +244,12 @@ export class DataStore extends EventEmitter {
       WHERE job_id = ?
     `);
 
+    this.promoteNewStagingMessagesStmt = this.db.prepare(`
+      INSERT OR IGNORE INTO user_messages (message_id, user_id, guild_id, channel_id, content, created_at)
+      SELECT message_id, user_id, guild_id, channel_id, content, created_at
+      FROM download_staging_messages WHERE job_id = ?
+    `);
+
     this.randomMessageStmt = this.db.prepare(`
       SELECT content
       FROM user_messages
@@ -610,6 +616,7 @@ export class DataStore extends EventEmitter {
 
     this.transaction(() => {
       this.ensureUser(normalizedUserId);
+      this.deleteMetadataStmt.run(`download_checkpoint:${normalizedUserId}`);
       this.deleteUserMessagesStmt.run(normalizedUserId);
       this.updateTrackedStmt.run(1, nowIso(), normalizedUserId);
       this.updateMessageCountStmt.run(0, nowIso(), null, normalizedUserId);
@@ -664,18 +671,37 @@ export class DataStore extends EventEmitter {
     return Number(this.countStagingMessagesStmt.get(String(jobId))?.count || 0);
   }
 
-  commitStagedUserDownload(jobId, userId, mediaSkipped = 0) {
+  getUserDownloadCheckpoint(userId, guildId) {
+    const value = this.getMetadata(`download_checkpoint:${userId}`);
+    const [savedGuild, messageId] = value?.split(':') ?? [];
+    return savedGuild === String(guildId) && /^\d+$/.test(messageId ?? '') ? messageId : null;
+  }
+
+  commitStagedUserDownload(jobId, userId, mediaSkipped = 0, { guildId, checkpoint = null, newestId = null } = {}) {
     const normalizedJobId = String(jobId);
     const normalizedUserId = String(userId);
-    const nextCount = this.getStagedDownloadCount(normalizedJobId);
+    const key = `download_checkpoint:${normalizedUserId}`;
+    let nextCount;
 
     this.transaction(() => {
       this.ensureUser(normalizedUserId);
-      this.deleteUserMessagesStmt.run(normalizedUserId);
-      this.promoteStagingMessagesStmt.run(normalizedJobId);
+      if (checkpoint) {
+        if (this.getUserDownloadCheckpoint(normalizedUserId, guildId) !== checkpoint) {
+          throw new Error('Download checkpoint changed while searching; retry the download.');
+        }
+        const added = this.promoteNewStagingMessagesStmt.run(normalizedJobId).changes;
+        nextCount = this.getMessageCount(normalizedUserId) + added;
+        mediaSkipped += this.getUserSummary(normalizedUserId).mediaSkipped;
+      } else {
+        nextCount = this.getStagedDownloadCount(normalizedJobId);
+        this.deleteUserMessagesStmt.run(normalizedUserId);
+        this.promoteStagingMessagesStmt.run(normalizedJobId);
+      }
       this.updateTrackedStmt.run(1, nowIso(), normalizedUserId);
       this.updateMessageCountStmt.run(nextCount, nowIso(), nowIso(), normalizedUserId);
       this.replaceMediaSkippedStmt.run(mediaSkipped, normalizedUserId);
+      if (newestId && guildId) this.upsertMetadataStmt.run(key, `${guildId}:${newestId}`);
+      else if (!checkpoint) this.deleteMetadataStmt.run(key);
       this.deleteStagingMessagesStmt.run(normalizedJobId);
     });
 
@@ -740,6 +766,7 @@ export class DataStore extends EventEmitter {
 
     this.transaction(() => {
       this.ensureUser(normalizedUserId);
+      this.deleteMetadataStmt.run(`download_checkpoint:${normalizedUserId}`);
       this.deleteUserMessagesStmt.run(normalizedUserId);
       this.updateTrackedStmt.run(0, nowIso(), normalizedUserId);
       this.updateMessageCountStmt.run(0, nowIso(), null, normalizedUserId);
@@ -754,6 +781,7 @@ export class DataStore extends EventEmitter {
     const normalizedUserId = String(userId);
     this.transaction(() => {
       this.ensureUser(normalizedUserId);
+      this.deleteMetadataStmt.run(`download_checkpoint:${normalizedUserId}`);
       this.deleteUserMessagesStmt.run(normalizedUserId);
       this.updateMessageCountStmt.run(0, nowIso(), null, normalizedUserId);
     });
@@ -786,6 +814,8 @@ export class DataStore extends EventEmitter {
   incrementMediaSkipped(userId) {
     const normalizedUserId = String(userId);
     this.ensureUser(normalizedUserId);
+    // Live media has no stored message ID, so a later search cannot deduplicate its count.
+    this.deleteMetadataStmt.run(`download_checkpoint:${normalizedUserId}`);
     this.incrementMediaSkippedStmt.run(nowIso(), normalizedUserId);
     this.emit('change', { type: 'user', userId: normalizedUserId });
   }

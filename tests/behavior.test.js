@@ -271,7 +271,12 @@ async function main() {
     assert.equal(store.getTotalMediaSkipped(), 3);
 
     const download = (jobId, messages, limit = null) => downloadUserHistory({
-      client: { rest: { get: async () => ({ total_results: messages.length, messages: messages.map(message => [message]) }) } },
+      client: { rest: { get: async (route, { query: params }) => {
+        assert.equal(route.includes('?'), false, 'search query must not alter the rate-limit bucket route');
+        const page = messages.filter(message => !params.has('max_id') || BigInt(message.id) < BigInt(params.get('max_id')))
+          .slice(0, Number(params.get('limit')));
+        return { total_results: messages.length, messages: page.map(message => [message]) };
+      } } },
       guildId: 'guild', targetUserId: targetId, limit, store, jobId, onProgress: async () => {},
     });
     const firstDownload = await download('media-job', [searchMessage('103', '', { attachments: [{}] }), searchMessage('102', 'text'), searchMessage('101', '')]);
@@ -280,9 +285,9 @@ async function main() {
     assert.equal(store.getUserSummary(targetId).mediaSkipped, 1, 'download replaces prior live skip count');
     assert.deepEqual(store.exportUserMessages(targetId).map(message => message.content), ['text']);
     const secondDownload = await download('redownload-job', [searchMessage('104', 'new text')]);
-    assert.equal(secondDownload.mediaSkipped, 0);
-    assert.equal(store.getUserSummary(targetId).mediaSkipped, 0, 're-download replaces skipped count instead of adding');
-    assert.deepEqual(store.exportUserMessages(targetId).map(message => message.content), ['new text']);
+    assert.equal(secondDownload.mediaSkipped, 1);
+    assert.equal(store.getUserSummary(targetId).mediaSkipped, 1, 'incremental download keeps previously skipped media');
+    assert.deepEqual(store.exportUserMessages(targetId).map(message => message.content), ['text', 'new text']);
     const limitedDownload = await download('limited-job', [searchMessage('105', '', { sticker_items: [{}] }), searchMessage('104', 'new text')], 1);
     assert.equal(limitedDownload.downloadedCount, 0, 'media-only results consume the search limit');
     assert.equal(limitedDownload.mediaSkipped, 1);
