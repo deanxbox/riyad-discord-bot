@@ -241,6 +241,7 @@ function render(stateData) {
     $('queue-list').replaceChildren(...state.queue.map(q => {
       const row = node('div', '', 'user-row'), main = node('div', '', 'user-main');
       main.append(node('small', `${person(q.createdBy)} queued for ${q.target ? person(q.target) : 'any user'}`), node('p', q.message, 'queue-message'));
+      if (q.hasImage) main.append(node('small', `Image · ${q.image.name}`, 'queue-image-name'));
       const remove = node('button', 'Remove');
       remove.setAttribute('aria-label', `Remove queued reply for ${q.target ? person(q.target) : 'any user'}`);
       remove.onclick = async () => {
@@ -351,14 +352,48 @@ function bindMemberPicker(guildSelect, search, userIdInput, results) {
 bindMemberPicker($('download-guild'), $('member-search'), $('download-user'), $('member-results'));
 const clearQueueTarget = bindMemberPicker($('queue-guild'), $('queue-member-search'), $('queue-user'), $('queue-member-results'));
 $('queue-clear-user').onclick = clearQueueTarget;
+let queueImageUrl = null;
+function checkQueueImage(file) {
+  if (file && (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type) || !file.size || file.size > 8 * 1024 * 1024)) throw Error('Choose a PNG, JPEG, GIF or WebP image up to 8 MiB.');
+}
+function clearQueueImage() {
+  if (queueImageUrl) URL.revokeObjectURL(queueImageUrl);
+  queueImageUrl = null; $('queue-image').value = ''; $('queue-image-preview').hidden = true;
+  $('queue-image-thumbnail').removeAttribute('src'); $('queue-image-name').textContent = '';
+}
+$('queue-remove-image').onclick = clearQueueImage;
+$('queue-image').onchange = () => {
+  const file = $('queue-image').files[0];
+  try {
+    checkQueueImage(file);
+    if (queueImageUrl) URL.revokeObjectURL(queueImageUrl);
+    queueImageUrl = file ? URL.createObjectURL(file) : null;
+    $('queue-image-preview').hidden = !file;
+    if (file) $('queue-image-thumbnail').src = queueImageUrl;
+    else $('queue-image-thumbnail').removeAttribute('src');
+    $('queue-image-name').textContent = file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MiB` : '';
+  } catch (error) { clearQueueImage(); fail(error); }
+};
 $('queue-form').onsubmit = async e => {
-  e.preventDefault(); $('queue-add').disabled = true;
+  e.preventDefault(); $('queue-add').disabled = $('queue-image').disabled = $('queue-remove-image').disabled = true;
   try {
     if ($('queue-member-search').value.trim() && !$('queue-user').value) throw Error('Select a member from the results, paste their Discord ID, or clear the target for any user.');
-    await request('/api/queue', { message: $('queue-message').value, targetUserId: $('queue-user').value || null });
-    $('queue-message').value = ''; clearQueueTarget(); await refresh(); toast('Reply queued');
+    const file = $('queue-image').files[0], data = { message: $('queue-message').value, targetUserId: $('queue-user').value || null };
+    checkQueueImage(file);
+    if (!data.message.trim() && !file) throw Error('Add a message or image.');
+    if (file) {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = () => reject(Error('Could not read the image.'));
+        reader.readAsDataURL(file);
+      });
+      data.image = { name: file.name, contentType: file.type, data: base64 };
+    }
+    await request('/api/queue', data);
+    $('queue-message').value = ''; clearQueueTarget(); clearQueueImage(); await refresh(); toast('Reply queued');
   } catch (error) { fail(error); }
-  finally { $('queue-add').disabled = false; }
+  finally { $('queue-add').disabled = $('queue-image').disabled = $('queue-remove-image').disabled = false; }
 };
 $('download-guild').addEventListener('change', () => void loadChannels($('download-guild'), $('download-channels')).catch(fail));
 $('users-guild').addEventListener('change', () => void loadChannels($('users-guild'), $('users-channels')).catch(fail));

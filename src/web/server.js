@@ -135,15 +135,30 @@ function json(response, status, data) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(data));
 }
-async function readBody(request) {
+async function readBody(request, limit = 65536) {
   const chunks = []; let bytes = 0;
   for await (const chunk of request) {
     bytes += chunk.length;
-    if (bytes > 65536) throw Object.assign(new RangeError('Request body too large.'), { statusCode: 413 });
+    if (bytes > limit) throw Object.assign(new RangeError('Request body too large.'), { statusCode: 413 });
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw Object.assign(new SyntaxError('Invalid JSON.'), { statusCode: 400 }); }
+}
+function decodeQueueImage(image) {
+  if (image === undefined) return null;
+  const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+  if (!image || typeof image !== 'object' || Array.isArray(image) || Object.keys(image).some(k => !['name', 'contentType', 'data'].includes(k)) ||
+    typeof image.name !== 'string' || !image.name.trim() || typeof image.contentType !== 'string' || !Object.hasOwn(extensions, image.contentType) ||
+    typeof image.data !== 'string' || image.data.length > Math.ceil(8 * 1024 * 1024 / 3) * 4) throw new RangeError('Supply a PNG, JPEG, GIF or WebP image up to 8 MiB.');
+  const data = Buffer.from(image.data, 'base64');
+  if (!data.length || data.length > 8 * 1024 * 1024 || data.toString('base64') !== image.data) throw new RangeError('Invalid image data: use base64, up to 8 MiB.');
+  let name = path.win32.basename(image.name).replace(/\.[^.]*$/, '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100) || 'image';
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) name = `image-${name}`;
+  return { name: `${name}.${extensions[image.contentType]}`, contentType: image.contentType, data };
+}
+function queueEntryMetadata({ image, ...entry }) {
+  return { ...entry, hasImage: Boolean(image), image: image ? { name: image.name, size: image.data.length } : null };
 }
 const resolved = async (resolve, id) => id ? resolve(String(id)) : null;
 
@@ -179,7 +194,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
   const server = createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
-    response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://cdn.discordapp.com https://media.discordapp.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: https://cdn.discordapp.com https://media.discordapp.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     const pathname = new URL(request.url, 'http://localhost').pathname;
     if (request.method === 'GET' && isStaticPathSafe(pathname)) {
       try {
@@ -241,7 +256,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById),
           status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit, retryAfterSeconds: j.retryAfterSeconds, currentMessage: j.currentMessage,
         })));
-        const queue = await Promise.all(nextReplyQueue.list().map(async ({ targetUserId, createdByUserId, ...q }) => ({
+        const queue = await Promise.all(nextReplyQueue.list().map(queueEntryMetadata).map(async ({ targetUserId, createdByUserId, ...q }) => ({
           ...q, target: await resolved(resolveUser, targetUserId),
           createdBy: isSnowflake(createdByUserId) ? await resolveUser(createdByUserId)
             : userObject(createdByUserId, { username: createdByUserId === 'dashboard' ? 'Dashboard' : createdByUserId }),
@@ -262,12 +277,12 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         return;
       }
       if (pathname === '/api/queue' && request.method === 'POST') {
-        const data = await readBody(request);
-        if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(k => !['message', 'targetUserId'].includes(k)) ||
-          typeof data.message !== 'string' || !data.message.trim() || data.message.length > 2000 ||
-          (data.targetUserId != null && !isSnowflake(data.targetUserId))) throw new RangeError('Invalid queued reply: supply a message of 1–2000 characters and an optional Discord user ID.');
-        const entry = nextReplyQueue.enqueue({ message: data.message.trim(), targetUserId: data.targetUserId ?? null, createdByUserId: 'dashboard' });
-        json(response, 201, { entry }); return;
+        const data = await readBody(request, 12 * 1024 * 1024);
+        if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(k => !['message', 'targetUserId', 'image'].includes(k)) ||
+          (data.message !== undefined && (typeof data.message !== 'string' || data.message.length > 2000)) ||
+          (data.targetUserId != null && !isSnowflake(data.targetUserId))) throw new RangeError('Invalid queued reply: supply text up to 2000 characters or an image, and an optional Discord user ID.');
+        const entry = nextReplyQueue.enqueue({ message: data.message?.trim() ?? '', image: decodeQueueImage(data.image), targetUserId: data.targetUserId ?? null, createdByUserId: 'dashboard' });
+        json(response, 201, { entry: queueEntryMetadata(entry) }); return;
       }
       const queueMatch = /^\/api\/queue\/([^/]+)$/.exec(pathname);
       if (queueMatch && request.method === 'DELETE') {

@@ -7,10 +7,12 @@ export class NextReplyQueue extends EventEmitter {
     this.entries = [];
   }
 
-  enqueue({ message, targetUserId = null, createdByUserId }) {
+  enqueue({ message = '', image = null, targetUserId = null, createdByUserId }) {
+    if (!message.trim() && !image) throw new RangeError('Supply a message or image.');
     const entry = {
       id: crypto.randomUUID(),
       message,
+      image,
       targetUserId,
       createdByUserId,
       createdAt: new Date().toISOString(),

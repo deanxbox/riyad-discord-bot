@@ -48,7 +48,11 @@ textarea { font: inherit; width: 100%; margin-top: .4rem; padding: .7rem .75rem;
 textarea:focus-visible { outline: 3px solid #aab3ff; outline-offset: 2px; }
 #queue .form-grid { align-items: start; }
 #queue .form-grid > * { min-width: 0; }
-.queue-message-field, .queue-actions { grid-column: 1 / -1; }
+.queue-message-field, .queue-image-field, .queue-actions { grid-column: 1 / -1; }
+.queue-image-preview:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-top: .75rem; }
+.queue-image-preview img { width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; }
+.queue-image-preview span { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.queue-image-name { overflow-wrap: anywhere; }
 .queue-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; }
 #queue .form-grid small { font-weight: 400; }
 .queue-message { white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem 0 0; line-height: 1.5; }

@@ -65,7 +65,11 @@
       <section id="queue" class="tab">
         <article class="card"><h2>Queue a reply</h2><p class="muted">Used for the next qualifying auto-response, optionally reserved for one user.</p>
           <form id="queue-form" class="form-grid">
-            <label class="queue-message-field">Message<textarea id="queue-message" rows="5" maxlength="2000" required placeholder="What should Riyad say next?"></textarea></label>
+            <label class="queue-message-field">Message<textarea id="queue-message" rows="5" maxlength="2000" placeholder="What should Riyad say next?" aria-describedby="queue-message-help"></textarea><small id="queue-message-help">Add a message, an image, or both.</small></label>
+            <div class="queue-image-field">
+              <label for="queue-image">Image <span class="muted">(optional)</span><input id="queue-image" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-describedby="queue-image-help"><small id="queue-image-help">PNG, JPEG, GIF or WebP · up to 8 MiB.</small></label>
+              <div id="queue-image-preview" class="queue-image-preview" hidden><img id="queue-image-thumbnail" alt="Selected reply image"><span id="queue-image-name"></span><button id="queue-remove-image" type="button">Remove image</button></div>
+            </div>
             <label>Server<select id="queue-guild"></select><small>Used only for member search.</small></label>
             <div class="member-picker"><label for="queue-member-search">Find server member <span class="muted">(optional)</span></label><input id="queue-member-search" type="search" placeholder="Username or Discord ID" autocomplete="off" maxlength="64" aria-controls="queue-member-results" aria-describedby="queue-member-help"><div id="queue-member-results" class="member-results" aria-live="polite"></div><small id="queue-member-help">Select a member or paste their Discord ID below.</small></div>
             <label>Target user ID <span class="muted">(optional)</span><input id="queue-user" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Any user" aria-describedby="queue-target-help"><small id="queue-target-help">Leave blank for any user.</small></label>

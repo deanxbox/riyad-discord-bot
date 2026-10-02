@@ -62,7 +62,7 @@ export async function handleMessageCreate(message, { store, config, nextReplyQue
     const queuedReply = nextReplyQueue.consume(userId);
     const reply = queuedReply?.message ?? store.getRandomMessage(userId);
 
-    if (reply) {
+    if (reply || queuedReply?.image) {
       const delayMs = store.getReplyDelaySeconds() * 1000;
       if (store.getTypingIndicator() || delayMs > 0) {
         // Typing lasts ~10s in Discord, so refresh it every 8s while waiting.
@@ -73,7 +73,8 @@ export async function handleMessageCreate(message, { store, config, nextReplyQue
         }
       }
       await message.reply({
-        content: truncateReply(reply),
+        ...(reply ? { content: truncateReply(reply) } : {}),
+        ...(queuedReply?.image ? { files: [{ attachment: queuedReply.image.data, name: queuedReply.image.name }] } : {}),
         allowedMentions: { repliedUser: false },
       }).catch((error) => {
         console.error(`Failed to reply to message ${message.id}`, error);

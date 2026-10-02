@@ -81,6 +81,13 @@ stored-message deletion, random-line viewing, export, and re-download. Downloads
 user or sequentially refresh all tracked users. Discord names and avatars are resolved live when
 available; unresolved identities fall back to their IDs.
 
+Queue can send text (up to 2000 characters), one PNG/JPEG/GIF/WebP image (up to 8 MiB), or both.
+Choose an image to preview it, remove it before submitting, and optionally select a target user.
+Queued replies and their images are held in memory and lost on restart. Queue listings expose
+only image filenames and sizes, never image bytes. Script clients can POST `/api/queue` with
+`{ "message": "optional text", "targetUserId": null, "image": { "name": "photo.png", "contentType": "image/png", "data": "base64 bytes" } }`;
+omit `image` for text-only replies or `message` for image-only replies. Filenames are sanitised.
+
 Config edits only runtime-safe settings: reply/reaction chances, always-reply user, nerd emoji,
 special admin user/role, and guild. These overrides persist in SQLite. Tokens, bind address/port,
 dashboard enablement, and database paths remain environment-only. Logging in creates an HttpOnly,

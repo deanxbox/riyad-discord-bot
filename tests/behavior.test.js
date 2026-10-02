@@ -67,6 +67,7 @@ async function main() {
   assert.equal(queueChanges.length, 1, 'missing removal does not emit a change');
   assert.equal(commandQueue.consume('223456789012345678').targetUserId, '223456789012345678');
   assert.equal(commandQueue.consume('323456789012345678').targetUserId, null, 'remaining any-user entry still consumes');
+  assert.throws(() => commandQueue.enqueue({ message: ' \n ' }), /message or image/);
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'riyad-check-'));
   const olderPath = path.join(dir, 'older.sqlite');
@@ -255,6 +256,71 @@ async function main() {
     assert.equal((await api('/api/queue/missing', { method: 'DELETE' })).status, 404);
     assert.equal(queue.size(), 2);
     for (const entry of queue.list()) assert.equal((await api(`/api/queue/${entry.id}`, { method: 'DELETE' })).status, 200);
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    const imageUpload = { name: '..\\..\\photo<>?.exe', contentType: 'image/png', data: imageBytes.toString('base64') };
+    for (const image of [null, [], 'image', {}, { ...imageUpload, contentType: 'image/svg+xml' },
+      { ...imageUpload, contentType: 'toString' }, { ...imageUpload, name: '' }, { ...imageUpload, name: 1 },
+      { ...imageUpload, data: '' }, { ...imageUpload, data: 'not-base64!' }, { ...imageUpload, data: [1] },
+      { ...imageUpload, extra: true }]) {
+      assert.equal((await postQueue({ message: 'Hi', image })).status, 400, 'reject invalid image even when text is supplied');
+    }
+    assert.equal((await postQueue({ image: imageUpload, message: null })).status, 400);
+    assert.equal((await postQueue({ image: imageUpload, message: 'x'.repeat(2001) })).status, 400);
+    assert.equal((await postQueue({ image: imageUpload, extra: true })).status, 400, 'outer keys remain strict');
+    assert.equal((await postQueue({ image: { ...imageUpload, data: Buffer.alloc(8 * 1024 * 1024 + 1).toString('base64') } })).status, 400, 'decoded size cannot exceed 8 MiB');
+    assert.equal(queue.size(), 0, 'invalid image requests never enqueue');
+    const maxImageResponse = await postQueue({ image: { ...imageUpload, data: Buffer.alloc(8 * 1024 * 1024).toString('base64') } });
+    assert.equal(maxImageResponse.status, 201, '8 MiB images fit the route-specific body limit');
+    const maxImageEntry = (await maxImageResponse.json()).entry;
+    assert.equal(maxImageEntry.image.size, 8 * 1024 * 1024);
+    assert.equal(maxImageEntry.image.data, undefined, 'POST response must not echo bytes');
+    assert.equal((await api(`/api/queue/${maxImageEntry.id}`, { method: 'DELETE' })).status, 200);
+    assert.equal((await api('/api/settings', { method: 'POST', body: JSON.stringify({ padding: 'x'.repeat(65536) }) })).status, 413, 'other routes keep the 65536-byte limit');
+    assert.equal((await postQueue({ image: { ...imageUpload, data: 'x'.repeat(12 * 1024 * 1024) } })).status, 413, 'queue body limit remains bounded');
+
+    for (const contentType of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+      const response = await postQueue({ image: { ...imageUpload, contentType } });
+      assert.equal(response.status, 201, `${contentType} allows image-only replies`);
+      const entry = (await response.json()).entry;
+      assert.equal(entry.message, '');
+      assert.equal(entry.hasImage, true);
+      assert.match(entry.image.name, /^photo___\.(png|jpg|gif|webp)$/);
+      assert.deepEqual(queue.list().at(-1).image.data, imageBytes, 'queue holds decoded Buffers');
+      assert.equal(queue.list().at(-1).image.contentType, contentType);
+    }
+    assert.equal((await postQueue({ message: '  Caption  ', targetUserId: fakeUser.id, image: imageUpload })).status, 201);
+    const imageState = (await (await api('/api/state')).json()).queue;
+    assert.equal(imageState.length, 5);
+    for (const entry of imageState) {
+      assert.equal(entry.hasImage, true);
+      assert.deepEqual(entry.image, { name: entry.image.name, size: imageBytes.length }, 'state contains only image metadata');
+      assert.equal(JSON.stringify(entry).includes(imageUpload.data), false);
+      assert.equal(JSON.stringify(entry).includes('"data"'), false);
+    }
+    const imageReplies = [];
+    const replyStore = {
+      isTracked: () => true, isNerded: () => false, getMessageCount: () => 1,
+      getEffectiveReplyChancePercent: () => 100, getReplyDelaySeconds: () => 0, getTypingIndicator: () => false,
+      getRandomMessage: () => { throw Error('Queued image replies must not fall back to stored text'); },
+    };
+    const replyMessage = {
+      inGuild: () => true, author: { id: fakeUser.id, bot: false }, content: '',
+      attachments: { size: 0 }, stickers: { size: 0 }, embeds: [],
+      mentions: { has: () => true }, client: { user: { id: 'bot' } },
+      reply: async reply => imageReplies.push(reply),
+    };
+    await handleMessageCreate(replyMessage, { store: replyStore, config, nextReplyQueue: queue });
+    assert.deepEqual(imageReplies.at(-1), { content: 'Caption', files: [{ attachment: imageBytes, name: 'photo___.png' }], allowedMentions: { repliedUser: false } });
+    assert.equal(queue.size(), 4, 'targeted image reply takes priority over any-user entries');
+    await handleMessageCreate(replyMessage, { store: replyStore, config, nextReplyQueue: queue });
+    assert.deepEqual(imageReplies.at(-1), { files: [{ attachment: imageBytes, name: 'photo___.png' }], allowedMentions: { repliedUser: false } }, 'image-only sends files and omits content');
+    for (const entry of queue.list()) queue.remove(entry.id);
+    queue.enqueue({ message: 'x'.repeat(2001), image: { name: 'photo.png', contentType: 'image/png', data: imageBytes } });
+    await handleMessageCreate(replyMessage, { store: replyStore, config, nextReplyQueue: queue });
+    assert.equal(imageReplies.at(-1).content.length, 2000, 'image captions still use truncateReply');
+    queue.enqueue({ message: 'Text only' });
+    await handleMessageCreate(replyMessage, { store: replyStore, config, nextReplyQueue: queue });
+    assert.deepEqual(imageReplies.at(-1), { content: 'Text only', allowedMentions: { repliedUser: false } }, 'text-only behavior remains unchanged');
     const memberRoute = '/api/members?guildId=123456789012345678&query=res';
     assert.equal((await fetch(base + memberRoute)).status, 401, 'member search requires dashboard authentication');
     assert.equal((await api('/api/members?guildId=223456789012345678&query=res')).status, 400, 'member search rejects unknown guilds');
