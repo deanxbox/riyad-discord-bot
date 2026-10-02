@@ -21,9 +21,11 @@ try {
     assert.equal(route.includes('?'), false, 'all pages must share a bucket route');
     routes.push(params);
     assert.ok(Number(params.get('limit')) <= 25, 'do not exceed the existing supported page size');
-    const page = messages.filter(item => !params.has('max_id') || BigInt(item.id) < BigInt(params.get('max_id')))
+    const page = messages.filter(item => (!params.has('max_id') || BigInt(item.id) < BigInt(params.get('max_id'))) &&
+      (!params.getAll('channel_id').length || params.getAll('channel_id').includes(item.channel_id)))
       .slice(0, Number(params.get('limit')));
-    return { total_results: messages.length, messages: page.map(item => [item]) };
+    const filtered = messages.filter(item => !params.getAll('channel_id').length || params.getAll('channel_id').includes(item.channel_id));
+    return { total_results: filtered.length, messages: page.map(item => [item]) };
   } } };
   const download = (jobId, limit = null, onProgress = async () => {}) => downloadUserHistory({
     client, guildId, targetUserId: userId, limit, store, jobId, onProgress,
@@ -84,6 +86,32 @@ try {
   assert.equal(store.getUserDownloadCheckpoint(userId, guildId), previousCheckpoint,
     'an incomplete search must not advance beyond unseen older messages');
   assert.equal(store.getUserSummary(userId).messageCount, 54, 'partial search still safely merges new messages');
+  messages = [
+    { ...message(400), author: { id: '202' }, channel_id: '301' },
+    { ...message(300), author: { id: '202' }, channel_id: '300' },
+  ];
+  const firstScoped = await downloadUserHistory({
+    client, guildId, targetUserId: '202', channelIds: ['301'], limit: null, store, jobId: 'first-scoped',
+    onProgress: async () => {},
+  });
+  assert.equal(firstScoped.downloadedCount, 1);
+  assert.equal(store.getUserDownloadCheckpoint('202', guildId), null, 'a first scoped search must not create a full-guild checkpoint');
+  await downloadUserHistory({ client, guildId, targetUserId: '202', limit: null, store, jobId: 'first-unscoped', onProgress: async () => {} });
+  assert.equal(store.getUserSummary('202').messageCount, 2, 'a later unscoped run still finds other-channel history');
+  assert.ok(store.exportUserMessages('202').some(item => item.channel_id === '300'));
+  const scopedCheckpoint = store.getUserDownloadCheckpoint(userId, guildId);
+  messages = [message(200), { ...message(199), channel_id: '301' }];
+  routes.length = 0;
+  const scoped = await downloadUserHistory({
+    client, guildId, targetUserId: userId, channelIds: ['301'], limit: null, store, jobId: 'scoped',
+    onProgress: async () => {},
+  });
+  assert.equal(scoped.downloadedCount, 55, 'scoped search adds only selected-channel messages to the existing archive');
+  assert.equal(routes[0].get('channel_id'), '301');
+  assert.equal(store.getUserDownloadCheckpoint(userId, guildId), scopedCheckpoint, 'scoped search preserves the full-guild checkpoint');
+  assert.ok(store.exportUserMessages(userId).some(item => item.channel_id === '300'), 'scoped search preserves messages from other channels');
+  assert.ok(store.exportUserMessages(userId).some(item => item.channel_id === '301'), 'scoped search merges selected-channel messages');
+  assert.ok(routes.every(params => params.getAll('channel_id').join(',') === '301'), 'selected channels are sent on every search page');
   messages = [message(155), ...fullMessages];
 
   let indexingCalls = 0;
@@ -111,9 +139,13 @@ try {
     } } },
     config: {}, store,
   });
+  const selectedChannels = ['300'];
   const jobs = Array.from({ length: 4 }, (_, i) => manager.startHeadless({
     guildId, requestedById: userId, targetUserId: String(400 + i), limit: null,
+    ...(i === 0 ? { channelIds: selectedChannels } : {}),
   }).job);
+  selectedChannels.push('301');
+  assert.deepEqual(jobs[0].channelIds, ['300'], 'queued jobs snapshot channel selection');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(manager.runningCount, 3, 'only three jobs run concurrently');
   assert.equal(peak, 1, 'shared limiter serializes search requests across jobs');

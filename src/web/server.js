@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PermissionsBitField } from 'discord.js';
 
 const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
 const snowflake = /^\d{17,20}$/;
@@ -18,6 +19,21 @@ const staticFiles = new Map([
 const SESSION_MS = 12 * 60 * 60 * 1000;
 
 export function isSnowflake(value) { return typeof value === 'string' && snowflake.test(value); }
+
+function readableTextChannels(guild, client) {
+  const required = [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory];
+  return [...(guild?.channels?.cache?.values?.() || [])].filter(channel =>
+    channel.isTextBased?.() && !channel.isDMBased?.() && channel.permissionsFor(client?.user)?.has(required),
+  );
+}
+
+function validateChannelIds(value, guild, client) {
+  if (value === undefined || value === null) return [];
+  const available = new Set(readableTextChannels(guild, client).map(channel => channel.id));
+  if (!Array.isArray(value) || (available.size > 0 && value.length === 0) || value.length > 500 || value.length > available.size || new Set(value).size !== value.length ||
+    !value.every(id => isSnowflake(id) && available.has(id))) throw new RangeError('Invalid channel selection.');
+  return [...value];
+}
 export function isStaticPathSafe(value) { return staticFiles.has(value); }
 export function validateSetting(key, value) {
   if (key === 'replyChancePercent' && Number.isInteger(value) && value >= 0 && value <= 100) return value;
@@ -261,6 +277,15 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           : [...(await guild.members.search({ query, limit: 10 })).values()];
         json(response, 200, { members: members.map(member => userObject(member.id, member.user, member)) }); return;
       }
+      const channelMatch = /^\/api\/guilds\/(\d{17,20})\/channels$/.exec(pathname);
+      if (channelMatch && request.method === 'GET') {
+        const guild = client?.guilds?.cache?.get(channelMatch[1]);
+        if (!guild) throw new RangeError('Unknown server.');
+        const channels = readableTextChannels(guild, client)
+          .sort((a, b) => (a.parent?.position ?? -1) - (b.parent?.position ?? -1) || (a.position ?? 0) - (b.position ?? 0))
+          .map(({ id, name, parent }) => ({ id, name, categoryId: parent?.id ?? null, categoryName: parent?.name ?? null }));
+        json(response, 200, { channels }); return;
+      }
       const userMatch = /^\/api\/users\/(\d{17,20})$/.exec(pathname);
       if (userMatch && request.method === 'DELETE') {
         await downloadJobs.deleteUser(userMatch[1]);
@@ -303,18 +328,20 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
       }
       if (pathname === '/api/users/bulk' && request.method === 'POST') {
         const data = await readBody(request);
+        const guildId = data?.guildId ?? config.guildId;
         if (!data || !['download', 'delete'].includes(data.action) ||
           !Array.isArray(data.userIds) || !data.userIds.length || data.userIds.length > 1000 ||
           new Set(data.userIds).size !== data.userIds.length || !data.userIds.every(isSnowflake) ||
           data.userIds.some(id => !store.listUserIds().includes(id)) ||
-          (data.action === 'download' && (!isSnowflake(data.guildId) || !client?.guilds?.cache?.has(data.guildId)))) throw new RangeError('Invalid bulk request.');
+          (data.action === 'download' && (!isSnowflake(guildId) || !client?.guilds?.cache?.has(guildId)))) throw new RangeError('Invalid bulk request.');
         if (data.action === 'delete') {
           for (const id of data.userIds) await downloadJobs.deleteUser(id);
           json(response, 200, { deleted: data.userIds.length });
         } else {
+          const channelIds = validateChannelIds(data.channelIds, client.guilds.cache.get(guildId), client);
           let started = 0;
           for (const id of data.userIds) {
-            if (downloadJobs.startHeadless({ guildId: data.guildId, targetUserId: id, requestedById: config.specialUserId, limit: null }).created) started++;
+            if (downloadJobs.startHeadless({ guildId, targetUserId: id, requestedById: config.specialUserId, limit: null, channelIds }).created) started++;
           }
           json(response, 202, { started, skipped: data.userIds.length - started });
         }
@@ -322,10 +349,12 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
       }
       if (pathname === '/api/downloads' && request.method === 'POST') {
         const data = await readBody(request);
-        if (!data || !isSnowflake(data.userId) || !isSnowflake(data.guildId) || !(client?.guilds?.cache?.has(data.guildId)) ||
+        const guildId = data?.guildId ?? config.guildId;
+        if (!data || !isSnowflake(data.userId) || !isSnowflake(guildId) || !(client?.guilds?.cache?.has(guildId)) ||
           (data.limit !== null && data.limit !== undefined && (!Number.isSafeInteger(data.limit) || data.limit < 1))) throw new RangeError('Invalid download request.');
-        if (downloadJobs.getJobStatus(data.guildId, data.userId)) { json(response, 409, { error: 'A download is already active for this guild and user.' }); return; }
-        const result = downloadJobs.startHeadless({ guildId: data.guildId, requestedById: config.specialUserId, targetUserId: data.userId, limit: data.limit ?? null });
+        const channelIds = validateChannelIds(data.channelIds, client.guilds.cache.get(guildId), client);
+        if (downloadJobs.getJobStatus(guildId, data.userId)) { json(response, 409, { error: 'A download is already active for this guild and user.' }); return; }
+        const result = downloadJobs.startHeadless({ guildId, requestedById: config.specialUserId, targetUserId: data.userId, limit: data.limit ?? null, channelIds });
         if (!result.created) { json(response, 409, { error: 'A download is already active for this guild and user.' }); return; }
         json(response, 202, { ok: true }); return;
       }
@@ -345,13 +374,15 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
       }
       if (pathname === '/api/refresh-all' && request.method === 'POST') {
         const data = await readBody(request);
-        if (!isSnowflake(data.guildId) || !client?.guilds?.cache?.has(data.guildId) ||
+        const guildId = data?.guildId ?? config.guildId;
+        if (!isSnowflake(guildId) || !client?.guilds?.cache?.has(guildId) ||
           (data.limit != null && (!Number.isSafeInteger(data.limit) || data.limit < 1))) throw new RangeError('Invalid refresh request.');
+        const channelIds = validateChannelIds(data.channelIds, client.guilds.cache.get(guildId), client);
         void (async () => {
           for (const [i, userId] of store.listTrackedUsers().entries()) {
             if (i) await new Promise(resolve => setTimeout(resolve, 500));
-            if (store.isTracked(userId) && !downloadJobs.getJobStatus(data.guildId, userId)) {
-              const { job, created } = downloadJobs.startHeadless({ guildId: data.guildId, requestedById: config.specialUserId, targetUserId: userId, limit: data.limit ?? null });
+            if (store.isTracked(userId) && !downloadJobs.getJobStatus(guildId, userId)) {
+              const { job, created } = downloadJobs.startHeadless({ guildId, requestedById: config.specialUserId, targetUserId: userId, limit: data.limit ?? null, channelIds });
               if (created) await job.completion;
             }
           }

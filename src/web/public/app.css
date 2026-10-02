@@ -71,3 +71,41 @@
 @media (max-width: 540px) { #downloads .form-grid { grid-template-columns: 1fr; } #downloads .form-grid > button { width: 100%; } #users .user-main small { white-space: normal; overflow-wrap: anywhere; } }
 @media (max-width: 1100px) { #users .user-row { grid-template-columns: 1rem 40px minmax(0, 1fr) auto; } }
 @media (max-width: 540px) { #users .user-row { grid-template-columns: 1rem 40px minmax(0, 1fr); } #users .user-row > button, #users .user-status { grid-column: 2 / -1; } }
+
+#config .form-grid label:has(> input[type="checkbox"]) { display: flex; align-items: center; gap: .6rem; align-self: end; min-height: 2.6rem; }
+#config .form-grid input[type="checkbox"] { flex: none; width: 1.1rem; height: 1.1rem; margin: 0; accent-color: var(--accent); }
+#config .form-grid > button { grid-column: 1 / -1; width: 100%; }
+#config .form-grid label > small, .download-scope small { display: block; margin-top: .4rem; color: var(--muted); font-size: .875rem; font-weight: 400; line-height: 1.4; }
+.download-scope { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 1rem; align-items: start; margin: 1rem 0; }
+.download-scope label { min-width: 0; margin: 0; }
+
+/* Shared channel picker and download form */
+#downloads .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+#downloads .form-grid > * { min-width: 0; }
+#downloads .channel-field { grid-column: 1 / -1; }
+#downloads .download-limit-field { grid-column: span 2; }
+#downloads .form-grid > button { min-height: 2.7rem; }
+#downloads .form-grid small, .channel-field > small, .download-refresh small { display: block; margin-top: .4rem; color: var(--muted); font-size: .875rem; font-weight: 400; line-height: 1.4; }
+.channel-field { min-width: 0; }
+.channel-picker { min-width: 0; margin: 0; padding: .85rem; border: 1px solid var(--line); border-radius: 10px; background: #1b1e25; }
+.channel-picker legend { padding: 0 .3rem; font-size: .87rem; font-weight: 600; }
+.channel-picker .channel-filter { margin: 0; }
+.channel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .65rem 0; }
+.channel-controls button { padding: .4rem .65rem; font-size: .85rem; }
+.channel-summary { margin-left: auto; color: var(--muted); font-size: .85rem; }
+.channel-list { max-height: 15rem; overflow-y: auto; scrollbar-gutter: stable; }
+.channel-group + .channel-group { margin-top: .75rem; }
+.channel-group h3 { margin: 0 0 .3rem; padding: .3rem .45rem; color: var(--muted); font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; overflow-wrap: anywhere; }
+.channel-picker .channel-option { display: flex; align-items: center; gap: .65rem; margin: 0; padding: .5rem; border-radius: 6px; cursor: pointer; font-weight: 400; }
+.channel-option:hover { background: #303441; }
+.channel-option:has(:focus-visible) { background: #303441; }
+.channel-picker .channel-option[hidden] { display: none; }
+.channel-option input[type="checkbox"] { flex: none; width: 1rem; height: 1rem; margin: 0; padding: 0; accent-color: var(--accent); }
+.channel-option span { min-width: 0; overflow-wrap: anywhere; }
+.channel-picker:disabled { opacity: .65; }
+.channel-controls button:disabled { cursor: default; opacity: .5; }
+.download-refresh { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.download-refresh small { margin: 0; }
+@media (max-width: 850px) { #downloads .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } #downloads .download-limit-field { grid-column: auto; } }
+@media (max-width: 650px) { .download-scope { grid-template-columns: 1fr; } }
+@media (max-width: 540px) { #downloads .form-grid { grid-template-columns: 1fr; } .download-refresh > button { width: 100%; } }

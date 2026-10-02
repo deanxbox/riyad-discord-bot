@@ -135,7 +135,7 @@ export class DownloadJobManager extends EventEmitter {
     return jobId ? this.jobs.get(jobId) ?? null : null;
   }
 
-  createJob({ guildId, requestedById, targetUserId, limit, onProgress = null }) {
+  createJob({ guildId, requestedById, targetUserId, limit, channelIds = [], onProgress = null }) {
     let resolveCompletion;
 
     const completion = new Promise((resolve) => {
@@ -148,6 +148,7 @@ export class DownloadJobManager extends EventEmitter {
       requestedById,
       targetUserId,
       limit,
+      channelIds: [...channelIds],
       downloadedCount: 0,
       mediaSkipped: 0,
       totalResults: null,
@@ -255,7 +256,7 @@ export class DownloadJobManager extends EventEmitter {
     return job;
   }
 
-  startHeadless({ guildId, requestedById, targetUserId, limit, onProgress }) {
+  startHeadless({ guildId, requestedById, targetUserId, limit, channelIds = [], onProgress }) {
     if (this.deletingUsers.has(targetUserId)) return { job: null, created: false };
     const existingJob = this.getActiveJob(guildId, targetUserId);
 
@@ -268,6 +269,7 @@ export class DownloadJobManager extends EventEmitter {
       requestedById,
       targetUserId,
       limit,
+      channelIds,
       onProgress,
     });
 
@@ -344,6 +346,7 @@ export class DownloadJobManager extends EventEmitter {
         client: this.client,
         guildId: job.guildId,
         targetUserId: job.targetUserId,
+        channelIds: job.channelIds,
         limit: job.limit,
         store: this.store,
         jobId: job.id,

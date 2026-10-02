@@ -116,13 +116,14 @@ function flattenSearchMessages(messageGroups) {
   return messages;
 }
 
-function buildSearchQuery({ targetUserId, limit, maxId }) {
+function buildSearchQuery({ targetUserId, limit, maxId, channelIds = [] }) {
   const params = new URLSearchParams();
 
   params.set('limit', String(limit));
   params.set('sort_by', 'timestamp');
   params.set('sort_order', 'desc');
   params.append('author_id', targetUserId);
+  for (const channelId of channelIds) params.append('channel_id', channelId);
 
   if (maxId) {
     params.set('max_id', maxId);
@@ -131,7 +132,7 @@ function buildSearchQuery({ targetUserId, limit, maxId }) {
   return params;
 }
 
-async function fetchSearchPage({ client, guildId, targetUserId, pageSize, maxId, signal, onIndexing, onWait, searchRequest }) {
+async function fetchSearchPage({ client, guildId, targetUserId, pageSize, maxId, channelIds, signal, onIndexing, onWait, searchRequest }) {
   let failures = 0;
   while (true) {
     throwIfCancelled(signal);
@@ -140,10 +141,10 @@ async function fetchSearchPage({ client, guildId, targetUserId, pageSize, maxId,
     try {
       response = await (searchRequest
         ? searchRequest(() => client.rest.get(Routes.guildMessagesSearch(guildId), {
-          query: buildSearchQuery({ targetUserId, limit: pageSize, maxId }),
+          query: buildSearchQuery({ targetUserId, limit: pageSize, maxId, channelIds }),
         }), signal, onWait)
         : client.rest.get(Routes.guildMessagesSearch(guildId), {
-          query: buildSearchQuery({ targetUserId, limit: pageSize, maxId }),
+          query: buildSearchQuery({ targetUserId, limit: pageSize, maxId, channelIds }),
         }));
     } catch (error) {
       throwIfCancelled(signal);
@@ -180,6 +181,7 @@ export async function downloadUserHistory({
   client,
   guildId,
   targetUserId,
+  channelIds = [],
   limit,
   store,
   jobId,
@@ -194,7 +196,8 @@ export async function downloadUserHistory({
   let requestsMade = 0;
   let maxId = null;
   let newestId = null;
-  const checkpoint = limit === null ? store.getUserDownloadCheckpoint(targetUserId, guildId) : null;
+  const scoped = channelIds.length > 0;
+  const checkpoint = limit === null && !scoped ? store.getUserDownloadCheckpoint(targetUserId, guildId) : null;
   let exhausted = false;
   let reachedCheckpoint = false;
 
@@ -212,6 +215,7 @@ export async function downloadUserHistory({
         targetUserId,
         pageSize,
         maxId,
+        channelIds,
         signal,
         searchRequest,
         onWait: async retryAfterSeconds => onProgress({
@@ -255,7 +259,8 @@ export async function downloadUserHistory({
         break;
       }
 
-      const pageMessages = searchMessages.filter((message) => message?.author?.id === targetUserId).slice(0, pageSize);
+      const pageMessages = searchMessages.filter((message) => message?.author?.id === targetUserId &&
+        (!channelIds.length || channelIds.includes(message.channel_id ?? message.channelId))).slice(0, pageSize);
       if (pageMessages.length === 0) {
         throw new Error('Discord search returned no messages from the requested author.');
       }
@@ -301,7 +306,8 @@ export async function downloadUserHistory({
     const finalCount = store.commitStagedUserDownload(jobId, targetUserId, mediaSkipped, {
       guildId,
       checkpoint,
-      newestId: limit === null &&
+      merge: scoped,
+      newestId: !scoped && limit === null &&
         (reachedCheckpoint || (!checkpoint && exhausted &&
           (discoveredTotalResults === null || scannedCount >= discoveredTotalResults)))
         ? newestId : null,

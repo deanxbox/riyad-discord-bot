@@ -724,7 +724,7 @@ export class DataStore extends EventEmitter {
     return savedGuild === String(guildId) && /^\d+$/.test(messageId ?? '') ? messageId : null;
   }
 
-  commitStagedUserDownload(jobId, userId, mediaSkipped = 0, { guildId, checkpoint = null, newestId = null } = {}) {
+  commitStagedUserDownload(jobId, userId, mediaSkipped = 0, { guildId, checkpoint = null, newestId = null, merge = false } = {}) {
     const normalizedJobId = String(jobId);
     const normalizedUserId = String(userId);
     const key = `download_checkpoint:${normalizedUserId}`;
@@ -739,6 +739,11 @@ export class DataStore extends EventEmitter {
         const added = this.promoteNewStagingMessagesStmt.run(normalizedJobId).changes;
         nextCount = this.getMessageCount(normalizedUserId) + added;
         mediaSkipped += this.getUserSummary(normalizedUserId).mediaSkipped;
+      } else if (merge) {
+        const added = this.promoteNewStagingMessagesStmt.run(normalizedJobId).changes;
+        nextCount = this.getMessageCount(normalizedUserId) + added;
+        // ponytail: scoped searches cannot deduplicate media-only IDs; retain the aggregate until they are stored per message.
+        mediaSkipped = this.getUserSummary(normalizedUserId).mediaSkipped;
       } else {
         nextCount = this.getStagedDownloadCount(normalizedJobId);
         this.deleteUserMessagesStmt.run(normalizedUserId);
@@ -748,7 +753,7 @@ export class DataStore extends EventEmitter {
       this.updateMessageCountStmt.run(nextCount, nowIso(), nowIso(), normalizedUserId);
       this.replaceMediaSkippedStmt.run(mediaSkipped, normalizedUserId);
       if (newestId && guildId) this.upsertMetadataStmt.run(key, `${guildId}:${newestId}`);
-      else if (!checkpoint) this.deleteMetadataStmt.run(key);
+      else if (!checkpoint && !merge) this.deleteMetadataStmt.run(key);
       this.deleteStagingMessagesStmt.run(normalizedJobId);
     });
 

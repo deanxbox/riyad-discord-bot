@@ -35,15 +35,18 @@
         <article class="card"><div class="row between"><div><h2>Tracked users</h2><p class="muted">Manage archived messages and reply behavior.</p></div><button id="addUser" class="primary">＋ Add user</button></div>
           <div class="filters"><label class="search-label">Search users<input id="search" type="search" placeholder="Name or ID"></label><label>Sort by<select id="sort"><option value="name">Name</option><option value="count">Message count</option><option value="last">Last download</option></select></label></div>
           <div class="row bulk-actions"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span><button id="bulk-download" type="button">Download selected</button><button id="bulk-delete" type="button" class="danger">Delete selected</button></div>
+          <div class="download-scope"><label>Server<select id="users-guild" required></select><small>Used for selected-user downloads and re-downloads.</small></label><div class="channel-field"><fieldset id="users-channels" class="channel-picker" disabled aria-describedby="users-channel-help"><legend>Channels</legend><p class="empty-state">Select a server to load channels.</p></fieldset><small id="users-channel-help">All readable text channels are checked by default. Keep at least one checked.</small></div></div>
           <div id="user-list" class="user-list"></div></article>
       </section>
       <section id="downloads" class="tab">
         <article class="card"><h2>Start a download</h2><form id="download-form" class="form-grid">
-          <div class="member-picker"><label for="member-search">Find server member</label><input id="member-search" type="search" placeholder="Username or Discord ID" autocomplete="off" aria-controls="member-results" aria-describedby="download-help"><div id="member-results" class="member-results" aria-live="polite"></div></div>
-          <label>Server<select id="download-guild" required></select></label><label>Message limit <span class="muted">(optional)</span><input id="download-limit" type="number" min="1" placeholder="All messages"></label>
+          <label>Server<select id="download-guild" required></select></label>
+          <div class="member-picker"><label for="member-search">Find server member</label><input id="member-search" type="search" placeholder="Username or Discord ID" autocomplete="off" aria-controls="member-results" aria-describedby="download-help"><div id="member-results" class="member-results" aria-live="polite"></div><small id="download-help">Search this server, select a member, or paste a Discord ID below.</small></div>
           <label>Selected user ID<input id="download-user" required inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Select above or paste an ID"></label>
-          <button class="primary" type="submit">Start download</button><small id="download-help">Search this server, select a member, or paste a Discord ID.</small></form>
-          <button id="refresh-all" class="quiet">Refresh all tracked users</button></article>
+          <div class="channel-field"><fieldset id="download-channels" class="channel-picker" disabled aria-describedby="download-channel-help"><legend>Channels</legend><p class="empty-state">Select a server to load channels.</p></fieldset><small id="download-channel-help">All readable text channels are checked by default. Keep at least one checked.</small></div>
+          <label class="download-limit-field">Message limit <span class="muted">(optional)</span><input id="download-limit" type="number" min="1" placeholder="All messages"></label>
+          <button class="primary" type="submit">Start download</button></form>
+          <div class="download-refresh"><button id="refresh-all" class="quiet" type="button">Refresh all tracked users</button><small>Uses the server, channels and message limit above.</small></div></article>
         <article class="card"><h2>Active jobs</h2><div id="job-list" class="user-list"></div></article>
       </section>
       <section id="config" class="tab"><article class="card"><h2>Runtime configuration</h2><p class="muted">Only safe live settings are editable. Secrets and network/database settings remain environment-only.</p><form id="config-form" class="form-grid">

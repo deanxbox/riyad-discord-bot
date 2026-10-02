@@ -138,6 +138,9 @@ async function main() {
       /WEB_DASHBOARD_TOKEN/);
     const jobs = new EventEmitter();
     jobs.getActiveJobs = () => [];
+    jobs.getJobStatus = () => null;
+    const startedJobs = [];
+    jobs.startHeadless = options => { startedJobs.push(options); return { created: true }; };
     const queue = new EventEmitter();
     queue.list = () => [];
     const guildMembers = {
@@ -148,10 +151,17 @@ async function main() {
         return new Map(query === 'res' ? [[fakeUser.id, { id: fakeUser.id, user: fakeUser, displayName: 'Guild player' }]] : []);
       },
     };
+    const channels = new Map([
+      ['323456789012345678', { id: '323456789012345678', name: 'general', position: 4, isTextBased: () => true, permissionsFor: () => ({ has: () => true }) }],
+      ['423456789012345678', { id: '423456789012345678', name: 'private', isTextBased: () => true, permissionsFor: () => ({ has: () => false }) }],
+      ['523456789012345678', { id: '523456789012345678', name: 'voice', isTextBased: () => false, permissionsFor: () => ({ has: () => true }) }],
+    ]);
+    const guild = { id: '123456789012345678', name: 'Test guild', members: guildMembers, roles: { cache: new Map() }, channels: { cache: channels } };
+    const botClient = { ...fakeClient, user: { id: 'bot' }, guilds: { cache: new Map([[guild.id, guild]]) }, ws: { ping: 1 } };
     server = startWebDashboard({
       config, store, downloadJobs: jobs,
       nextReplyQueue: queue,
-      client: { ...fakeClient, guilds: { cache: new Map([['123456789012345678', { id: '123456789012345678', name: 'Test guild', members: guildMembers, roles: { cache: new Map() } }]]) }, ws: { ping: 1 } },
+      client: botClient,
     });
     if (!server.listening) await once(server, 'listening');
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -173,6 +183,50 @@ async function main() {
     assert.equal((await api('/api/members?guildId=123456789012345678&query=r')).status, 400, 'member search rejects broad queries');
     assert.equal((await (await api(memberRoute)).json()).members[0].displayName, 'Guild player');
     assert.equal((await (await api('/api/members?guildId=123456789012345678&query=123456789012345678')).json()).members[0].id, fakeUser.id);
+    assert.deepEqual((await (await api('/api/guilds/123456789012345678/channels')).json()).channels,
+      [{ id: '323456789012345678', name: 'general', categoryId: null, categoryName: null }], 'channel list includes only readable text channels');
+    const earlyCategory = { id: '623456789012345678', name: 'Z first category', position: 2 };
+    const lateCategory = { id: '723456789012345678', name: 'A second category', position: 8 };
+    const orderedChannels = [
+      { id: '823456789012345678', name: 'late-category-bottom', parent: lateCategory, position: 6 },
+      { id: '823456789012345679', name: 'early-category-bottom', parent: earlyCategory, position: 8 },
+      { id: '823456789012345680', name: 'uncategorised-bottom', parent: null, position: 9 },
+      { id: '823456789012345681', name: 'late-category-top', parent: lateCategory, position: 2 },
+      { id: '823456789012345682', name: 'early-category-top', parent: earlyCategory, position: 2 },
+      { id: '823456789012345683', name: 'uncategorised-top', parent: null, position: 1 },
+    ];
+    for (const channel of orderedChannels) channels.set(channel.id, { ...channel, isTextBased: () => true, permissionsFor: () => ({ has: () => true }) });
+    const sortedChannels = (await (await api(`/api/guilds/${guild.id}/channels`)).json()).channels;
+    assert.deepEqual(sortedChannels.map(channel => channel.name), [
+      'uncategorised-top', 'general', 'uncategorised-bottom',
+      'early-category-top', 'early-category-bottom', 'late-category-top', 'late-category-bottom',
+    ], 'channels follow Discord category and channel positions, not cache insertion or alphabetical order');
+    assert.deepEqual(sortedChannels.map(channel => [channel.categoryId, channel.categoryName]), [
+      [null, null], [null, null], [null, null],
+      [earlyCategory.id, earlyCategory.name], [earlyCategory.id, earlyCategory.name],
+      [lateCategory.id, lateCategory.name], [lateCategory.id, lateCategory.name],
+    ], 'channel responses include category identity and name');
+    for (const channel of orderedChannels) channels.delete(channel.id);
+    store.setTracked(fakeUser.id, true);
+    assert.equal((await api('/api/downloads', { method: 'POST', body: JSON.stringify({ userId: fakeUser.id, guildId: guild.id, channelIds: ['323456789012345678'], limit: null }) })).status, 202);
+    assert.deepEqual(startedJobs.at(-1).channelIds, ['323456789012345678'], 'single downloads snapshot validated channels');
+    assert.equal((await api('/api/downloads', { method: 'POST', body: JSON.stringify({ userId: fakeUser.id, limit: null }) })).status, 400,
+      'omitted guild is rejected when no configured default exists');
+    config.guildId = guild.id;
+    assert.equal((await api('/api/downloads', { method: 'POST', body: JSON.stringify({ userId: fakeUser.id, limit: null }) })).status, 202,
+      'single downloads use the configured guild when omitted');
+    assert.equal(startedJobs.at(-1).guildId, guild.id);
+    assert.equal((await api('/api/downloads', { method: 'POST', body: JSON.stringify({ userId: fakeUser.id, guildId: '223456789012345678', limit: null }) })).status, 400,
+      'an explicit unknown guild is rejected instead of falling back');
+    config.guildId = null;
+    assert.equal((await api('/api/downloads', { method: 'POST', body: JSON.stringify({ userId: fakeUser.id, guildId: guild.id, channelIds: ['423456789012345678'], limit: null }) })).status, 400,
+      'downloads reject channels without readable permissions');
+    const tooManyChannels = Array.from({ length: 501 }, (_, i) => String(600000000000000000n + BigInt(i)));
+    for (const id of tooManyChannels) channels.set(id, { id, name: 'readable', isTextBased: () => true, permissionsFor: () => ({ has: () => true }) });
+    assert.equal((await api('/api/downloads', { method: 'POST', body: JSON.stringify({ userId: fakeUser.id, guildId: guild.id, channelIds: tooManyChannels, limit: null }) })).status, 400,
+      'channel selection is capped at the documented API maximum');
+    assert.equal((await api('/api/users/bulk', { method: 'POST', body: JSON.stringify({ action: 'download', userIds: [fakeUser.id], guildId: guild.id, channelIds: ['323456789012345678'] }) })).status, 202);
+    assert.deepEqual(startedJobs.at(-1).channelIds, ['323456789012345678'], 'bulk downloads use the selected guild/channel snapshot');
     assert.equal((await cookieApi('/api/settings', { method: 'POST', body: JSON.stringify({ reactionChanceDenominator: 7 }) })).status, 403);
     assert.equal((await cookieApi('/api/settings', { method: 'POST', headers: { 'X-Requested-With': 'dashboard', Origin: 'http://evil.test' }, body: JSON.stringify({ reactionChanceDenominator: 7 }) })).status, 403);
     assert.equal((await cookieApi('/api/settings', { method: 'POST', headers: { 'X-Requested-With': 'dashboard', Origin: base }, body: JSON.stringify({ reactionChanceDenominator: 7 }) })).status, 200);
