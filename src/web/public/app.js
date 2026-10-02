@@ -232,13 +232,24 @@ function render(stateData) {
       document.querySelector('[data-resolved="guildId"]').textContent = state.guildName || '';
     }
   }
-  fillSelect($('download-guild'), state.guilds, state.guildId); fillSelect($('users-guild'), state.guilds, state.guildId); fillSelect($('trivia-guild'), state.guilds, state.guildId);
+  fillSelect($('download-guild'), state.guilds, state.guildId); fillSelect($('users-guild'), state.guilds, state.guildId); fillSelect($('trivia-guild'), state.guilds, state.guildId); fillSelect($('queue-guild'), state.guilds, state.guildId);
   void loadChannels($('download-guild'), $('download-channels')).catch(fail);
   void loadChannels($('users-guild'), $('users-channels')).catch(fail);
   if (selected === 'users') renderUsers();
   if (selected === 'downloads') renderJobs(state.jobs);
   if (selected === 'queue') {
-    $('queue-list').replaceChildren(...state.queue.map(q => node('div', `${person(q.createdBy)} queued for ${q.target ? person(q.target) : 'any user'}: ${q.message}`, 'user-row')));
+    $('queue-list').replaceChildren(...state.queue.map(q => {
+      const row = node('div', '', 'user-row'), main = node('div', '', 'user-main');
+      main.append(node('small', `${person(q.createdBy)} queued for ${q.target ? person(q.target) : 'any user'}`), node('p', q.message, 'queue-message'));
+      const remove = node('button', 'Remove');
+      remove.setAttribute('aria-label', `Remove queued reply for ${q.target ? person(q.target) : 'any user'}`);
+      remove.onclick = async () => {
+        remove.disabled = true;
+        try { await api(`/api/queue/${encodeURIComponent(q.id)}`, { method: 'DELETE' }); await refresh(); toast('Reply removed'); }
+        catch (error) { fail(error); remove.disabled = false; }
+      };
+      row.append(main, remove); return row;
+    }));
     if (!state.queue.length) $('queue-list').append(node('p', 'No replies queued.', 'empty-state'));
   }
   if (selected === 'trivia') {
@@ -308,37 +319,49 @@ async function bulk(action) {
 $('bulk-download').onclick = () => bulk('download');
 $('bulk-delete').onclick = () => bulk('delete');
 $('download-form').onsubmit = async e => { e.preventDefault(); try { await request('/api/downloads', { userId: $('download-user').value, guildId: $('download-guild').value, channelIds: selectedChannelIds($('download-channels')), limit: $('download-limit').value ? Number($('download-limit').value) : null }); toast('Download started'); await refresh(); nav('downloads'); } catch (error) { fail(error); } };
-let memberSearchTimer, memberSearchSequence = 0;
-function clearMemberResults() {
-  clearTimeout(memberSearchTimer); memberSearchSequence++;
-  $('member-results').replaceChildren();
+function bindMemberPicker(guildSelect, search, userIdInput, results) {
+  let timer, sequence = 0;
+  const clearResults = () => { clearTimeout(timer); sequence++; results.replaceChildren(); };
+  const clear = () => { clearResults(); search.value = ''; userIdInput.value = ''; };
+  guildSelect.addEventListener('change', clear);
+  userIdInput.addEventListener('input', () => { clearResults(); search.value = ''; });
+  search.addEventListener('input', () => {
+    clearResults();
+    const query = search.value.trim(), guildId = guildSelect.value, current = sequence;
+    userIdInput.value = '';
+    if (!guildId || query.length < 2 || query.length > 64) return;
+    timer = setTimeout(async () => {
+      try {
+        const { members } = await (await api(`/api/members?guildId=${encodeURIComponent(guildId)}&query=${encodeURIComponent(query)}`)).json();
+        if (current !== sequence) return;
+        results.replaceChildren(...members.map(member => {
+          const button = node('button', '', 'member-option'); button.type = 'button';
+          button.append(avatar(member), node('span', `${person(member)} · ${member.username} · ${member.id}`));
+          button.onclick = () => { userIdInput.value = member.id; search.value = person(member); clearResults(); };
+          return button;
+        }));
+        if (!members.length) results.append(node('p', 'No matching members in this server.', 'muted'));
+      } catch (error) {
+        if (current === sequence) results.replaceChildren(node('p', error.message, 'muted'));
+      }
+    }, 350);
+  });
+  return clear;
 }
-$('download-guild').addEventListener('change', () => {
-  clearMemberResults(); $('member-search').value = ''; $('download-user').value = '';
-  void loadChannels($('download-guild'), $('download-channels')).catch(fail);
-});
+bindMemberPicker($('download-guild'), $('member-search'), $('download-user'), $('member-results'));
+const clearQueueTarget = bindMemberPicker($('queue-guild'), $('queue-member-search'), $('queue-user'), $('queue-member-results'));
+$('queue-clear-user').onclick = clearQueueTarget;
+$('queue-form').onsubmit = async e => {
+  e.preventDefault(); $('queue-add').disabled = true;
+  try {
+    if ($('queue-member-search').value.trim() && !$('queue-user').value) throw Error('Select a member from the results, paste their Discord ID, or clear the target for any user.');
+    await request('/api/queue', { message: $('queue-message').value, targetUserId: $('queue-user').value || null });
+    $('queue-message').value = ''; clearQueueTarget(); await refresh(); toast('Reply queued');
+  } catch (error) { fail(error); }
+  finally { $('queue-add').disabled = false; }
+};
+$('download-guild').addEventListener('change', () => void loadChannels($('download-guild'), $('download-channels')).catch(fail));
 $('users-guild').addEventListener('change', () => void loadChannels($('users-guild'), $('users-channels')).catch(fail));
-$('member-search').addEventListener('input', () => {
-  clearMemberResults();
-  const query = $('member-search').value.trim(), guildId = $('download-guild').value, sequence = memberSearchSequence;
-  $('download-user').value = '';
-  if (!guildId || (query.length < 2 && !/^\d{17,20}$/.test(query))) return;
-  memberSearchTimer = setTimeout(async () => {
-    try {
-      const { members } = await (await api(`/api/members?guildId=${encodeURIComponent(guildId)}&query=${encodeURIComponent(query)}`)).json();
-      if (sequence !== memberSearchSequence) return;
-      $('member-results').replaceChildren(...members.map(member => {
-        const button = node('button', '', 'member-option'); button.type = 'button';
-        button.append(avatar(member), node('span', `${person(member)} · ${member.username} · ${member.id}`));
-        button.onclick = () => { $('download-user').value = member.id; $('member-search').value = person(member); clearMemberResults(); };
-        return button;
-      }));
-      if (!members.length) $('member-results').append(node('p', 'No matching members in this server.', 'muted'));
-    } catch (error) {
-      if (sequence === memberSearchSequence) $('member-results').replaceChildren(node('p', error.message, 'muted'));
-    }
-  }, 350);
-});
 $('refresh-all').onclick = async () => { if (!confirm('Refresh every tracked user in this server, sequentially?')) return; try { await request('/api/refresh-all', { guildId: $('download-guild').value, channelIds: selectedChannelIds($('download-channels')), limit: $('download-limit').value ? Number($('download-limit').value) : null }); toast('Refresh queued'); await refresh(); nav('downloads'); } catch (e) { fail(e); } };
 $('trivia-guild').addEventListener('change', () => refresh().catch(fail));
 $('config-form').addEventListener('input', e => { if (e.target.form === $('config-form')) $('config-form').dataset.editing = 'true'; });

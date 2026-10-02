@@ -6,6 +6,8 @@ import { EventEmitter, once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { sayCommand } from '../src/commands/say.js';
 import { scoreboardCommand } from '../src/commands/scoreboard.js';
+import { nextReplyCommand } from '../src/commands/next-reply.js';
+import { NextReplyQueue } from '../src/services/next-reply-queue.js';
 import { DataStore, isTriviaExpired } from '../src/services/data-store.js';
 import { createProgressPublisher } from '../src/services/download-jobs.js';
 import { classifySearchMessage, downloadUserHistory } from '../src/services/history-downloader.js';
@@ -30,6 +32,41 @@ async function main() {
   interaction.channel.messages.fetch = async () => { throw { code: 10008 }; };
   await sayCommand.execute({ interaction, config: { specialUserId: '1' } });
   assert.deepEqual(sends, ['Hello'], 'only a missing fetched message falls back');
+
+  const commandQueue = new NextReplyQueue(), commandReplies = [];
+  const commandOptions = nextReplyCommand.data.toJSON().options;
+  assert.equal(commandOptions.find(option => option.name === 'user').type, 6, 'user is a Discord user picker');
+  assert.equal(commandOptions.find(option => option.name === 'user').required, false);
+  assert.equal(commandOptions.find(option => option.name === 'user_id').type, 3, 'raw ID remains a string fallback');
+  const queueCommand = (user, userId) => nextReplyCommand.execute({
+    nextReplyQueue: commandQueue, config: { specialUserId: '123456789012345678' },
+    interaction: {
+      user: { id: '123456789012345678' },
+      options: { getUser: () => user, getString: key => key === 'message' ? 'Queued text' : userId },
+      reply: async reply => commandReplies.push(reply),
+    },
+  });
+  await queueCommand({ id: '223456789012345678' }, 'invalid');
+  assert.equal(commandQueue.list().at(-1).targetUserId, '223456789012345678', 'picked user wins even over an invalid fallback');
+  await queueCommand(null, '323456789012345678');
+  assert.equal(commandQueue.list().at(-1).targetUserId, '323456789012345678');
+  await queueCommand(null, null);
+  assert.equal(commandQueue.list().at(-1).targetUserId, null, 'omitted target queues for any user');
+  for (const invalid of ['invalid', '', '123', '<@323456789012345678>']) {
+    await queueCommand(null, invalid);
+    assert.equal(commandReplies.at(-1).ephemeral, true);
+    assert.match(commandReplies.at(-1).content, /valid Discord user ID/);
+  }
+  assert.equal(commandQueue.size(), 3, 'invalid fallbacks never enqueue');
+  const queueChanges = [];
+  commandQueue.on('change', change => queueChanges.push(change));
+  const removed = commandQueue.list()[1];
+  assert.deepEqual(commandQueue.remove(removed.id), removed);
+  assert.deepEqual(queueChanges, [{ type: 'queue', id: removed.id }]);
+  assert.equal(commandQueue.remove(removed.id), null);
+  assert.equal(queueChanges.length, 1, 'missing removal does not emit a change');
+  assert.equal(commandQueue.consume('223456789012345678').targetUserId, '223456789012345678');
+  assert.equal(commandQueue.consume('323456789012345678').targetUserId, null, 'remaining any-user entry still consumes');
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'riyad-check-'));
   const olderPath = path.join(dir, 'older.sqlite');
@@ -141,8 +178,7 @@ async function main() {
     jobs.getJobStatus = () => null;
     const startedJobs = [];
     jobs.startHeadless = options => { startedJobs.push(options); return { created: true }; };
-    const queue = new EventEmitter();
-    queue.list = () => [];
+    const queue = new NextReplyQueue();
     const guildMembers = {
       cache: new Map(),
       fetch: async id => id === fakeUser.id ? { id, user: fakeUser, displayName: 'Guild player' } : null,
@@ -177,6 +213,48 @@ async function main() {
     const cookieApi = (route, options = {}) => fetch(base + route, { ...options, headers: { Cookie: cookie.split(';')[0], ...(options.headers || {}) } });
     assert.equal((await cookieApi('/api/session')).status, 200);
     assert.equal((await cookieApi('/api/state')).status, 200, 'cookie works without bearer after reload');
+    const postQueue = body => api('/api/queue', { method: 'POST', body: JSON.stringify(body) });
+    assert.equal((await fetch(base + '/api/queue', { method: 'POST', body: JSON.stringify({ message: 'Unauthorized' }) })).status, 401);
+    assert.equal((await fetch(base + '/api/queue/missing', { method: 'DELETE' })).status, 401);
+    assert.equal((await cookieApi('/api/queue', { method: 'POST', body: JSON.stringify({ message: 'No CSRF header' }) })).status, 403);
+    assert.equal((await cookieApi('/api/queue', { method: 'POST', headers: { 'X-Requested-With': 'dashboard', Origin: 'http://evil.test' }, body: JSON.stringify({ message: 'Bad origin' }) })).status, 403);
+    for (const body of [null, [], 'text', {}, { message: null }, { message: 123 }, { message: '' }, { message: ' \n ' },
+      { message: 'x'.repeat(2001) }, { message: 'Hi', targetUserId: 'invalid' }, { message: 'Hi', targetUserId: '' },
+      { message: 'Hi', targetUserId: 123456789012345678 }, { message: 'Hi', targetUserId: [] },
+      { message: 'Hi', createdByUserId: fakeUser.id }]) {
+      assert.equal((await postQueue(body)).status, 400, `queue rejects ${JSON.stringify(body)}`);
+    }
+    assert.equal(queue.size(), 0, 'invalid requests do not mutate the queue');
+    const addQueueResponse = await cookieApi('/api/queue', { method: 'POST', headers: { 'X-Requested-With': 'dashboard', Origin: base }, body: JSON.stringify({ message: '  Hello\nthere  ', targetUserId: fakeUser.id }) });
+    assert.equal(addQueueResponse.status, 201);
+    const addedQueueEntry = (await addQueueResponse.json()).entry;
+    assert.equal(addedQueueEntry.message, 'Hello\nthere');
+    assert.equal(addedQueueEntry.targetUserId, fakeUser.id);
+    assert.equal(addedQueueEntry.createdByUserId, 'dashboard');
+    for (const body of [{ message: 'x'.repeat(2000) }, { message: 'Any user', targetUserId: null }]) {
+      const response = await postQueue(body);
+      assert.equal(response.status, 201);
+      assert.equal((await response.json()).entry.targetUserId, null);
+    }
+    const fetchedIds = [];
+    const originalFetch = botClient.users.fetch;
+    botClient.users.fetch = async id => { fetchedIds.push(id); return originalFetch(id); };
+    const queueState = (await (await api('/api/state')).json()).queue;
+    assert.equal(queueState.length, 3);
+    assert.equal(queueState[0].target.id, fakeUser.id);
+    assert.equal(queueState[0].createdBy.displayName, 'Dashboard');
+    assert.equal(queueState[1].target, null);
+    assert.ok(fetchedIds.every(isSnowflake), 'dashboard creator marker must never reach Discord user fetching');
+    botClient.users.fetch = originalFetch;
+    const removeRoute = `/api/queue/${addedQueueEntry.id}`;
+    assert.equal((await cookieApi(removeRoute, { method: 'DELETE' })).status, 403);
+    assert.equal((await cookieApi(removeRoute, { method: 'DELETE', headers: { 'X-Requested-With': 'dashboard', Origin: 'http://evil.test' } })).status, 403);
+    assert.equal(queue.size(), 3, 'denied deletion preserves entries');
+    assert.equal((await cookieApi(removeRoute, { method: 'DELETE', headers: { 'X-Requested-With': 'dashboard', Origin: base } })).status, 200);
+    assert.equal((await api(removeRoute, { method: 'DELETE' })).status, 404);
+    assert.equal((await api('/api/queue/missing', { method: 'DELETE' })).status, 404);
+    assert.equal(queue.size(), 2);
+    for (const entry of queue.list()) assert.equal((await api(`/api/queue/${entry.id}`, { method: 'DELETE' })).status, 200);
     const memberRoute = '/api/members?guildId=123456789012345678&query=res';
     assert.equal((await fetch(base + memberRoute)).status, 401, 'member search requires dashboard authentication');
     assert.equal((await api('/api/members?guildId=223456789012345678&query=res')).status, 400, 'member search rejects unknown guilds');
@@ -375,7 +453,7 @@ async function main() {
         .get('123456789012345678').tracked, 1);
       assert.equal(snapshot.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     } finally { snapshot.close(); }
-    console.log('Self-check passed: say fallback, trivia expiry, dashboard auth and SQLite backup.');
+    console.log('Self-check passed: say fallback, next-reply targeting and queue API, trivia expiry, dashboard auth and SQLite backup.');
   } finally {
     if (server) {
       server.close();

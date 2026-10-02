@@ -242,7 +242,9 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           status: j.status, downloadedCount: j.downloadedCount, mediaSkipped: j.mediaSkipped, totalResults: j.totalResults, limit: j.limit, retryAfterSeconds: j.retryAfterSeconds, currentMessage: j.currentMessage,
         })));
         const queue = await Promise.all(nextReplyQueue.list().map(async ({ targetUserId, createdByUserId, ...q }) => ({
-          ...q, target: await resolved(resolveUser, targetUserId), createdBy: await resolveUser(createdByUserId),
+          ...q, target: await resolved(resolveUser, targetUserId),
+          createdBy: isSnowflake(createdByUserId) ? await resolveUser(createdByUserId)
+            : userObject(createdByUserId, { username: createdByUserId === 'dashboard' ? 'Dashboard' : createdByUserId }),
         })));
         const leaderboard = guildId && isSnowflake(guildId) ? await Promise.all(store.triviaGetLeaderboard(guildId).map(async ({ user_id, ...row }) => ({ ...row, user: await resolveUser(user_id) }))) : [];
         json(response, 200, {
@@ -258,6 +260,19 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           stats: { tracked: store.getTrackedUsersCount(), storedMessages: store.getTotalStoredMessages(), mediaSkipped: store.getTotalMediaSkipped(), activeDownloads: jobs.length, uptime: Math.floor((Date.now() - started) / 1000), ping: client?.ws?.ping ?? null },
         });
         return;
+      }
+      if (pathname === '/api/queue' && request.method === 'POST') {
+        const data = await readBody(request);
+        if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(k => !['message', 'targetUserId'].includes(k)) ||
+          typeof data.message !== 'string' || !data.message.trim() || data.message.length > 2000 ||
+          (data.targetUserId != null && !isSnowflake(data.targetUserId))) throw new RangeError('Invalid queued reply: supply a message of 1–2000 characters and an optional Discord user ID.');
+        const entry = nextReplyQueue.enqueue({ message: data.message.trim(), targetUserId: data.targetUserId ?? null, createdByUserId: 'dashboard' });
+        json(response, 201, { entry }); return;
+      }
+      const queueMatch = /^\/api\/queue\/([^/]+)$/.exec(pathname);
+      if (queueMatch && request.method === 'DELETE') {
+        if (!nextReplyQueue.remove(queueMatch[1])) { json(response, 404, { error: 'Queued reply not found.' }); return; }
+        json(response, 200, { ok: true }); return;
       }
       if (pathname === '/api/resolve' && request.method === 'GET') {
         const id = params.get('id');

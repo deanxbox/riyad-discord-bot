@@ -63,7 +63,7 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 - `/random-line <user>` shows a random stored line for a user.
 - `/stats` posts a richer public stats card with uptime, ping, memory, counts, and voice connection info.
 - `/test-reply <user> [mentioned] [replying] [roll]` simulates whether Riyad would auto-reply.
-- `/next-reply <message> [user_id]` queues the next custom auto-reply, globally or for one specific user.
+- `/next-reply <message> [user] [user_id]` queues the next custom auto-reply for any user or a selected user; `user_id` is a Discord ID fallback and `user` takes priority. Replies can also be added and removed in the dashboard Queue tab.
 - `/join <voice_channel> [persistence]` joins a voice channel by exact ID or name. `persistence` defaults to true and makes Riyad rejoin if disconnected from that channel.
 - `/leave` leaves the voice channel Riyad is currently in and clears persistence for that guild.
 - `/say <message> [message_id]` makes the bot send or reply with a message.

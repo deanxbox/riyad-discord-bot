@@ -37,6 +37,14 @@ export class NextReplyQueue extends EventEmitter {
     return entry;
   }
 
+  remove(id) {
+    const index = this.entries.findIndex((entry) => entry.id === id);
+    if (index === -1) return null;
+    const [entry] = this.entries.splice(index, 1);
+    this.emit('change', { type: 'queue', id: entry.id });
+    return entry;
+  }
+
   list() {
     return [...this.entries];
   }

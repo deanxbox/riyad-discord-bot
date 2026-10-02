@@ -44,6 +44,17 @@
 @media (max-width: 540px) { #users > .card > .row > button { width: 100%; } #users .user-row { grid-template-columns: 40px minmax(0, 1fr); } #users .user-row > button { grid-column: 1 / -1; } #users .user-status { grid-column: 1 / -1; } #drawer { border-radius: 0; } #drawer .drawer-header { padding: 1.15rem 1rem; } #drawer-body { padding: 1.25rem 1rem 2rem; } .drawer-tools { grid-template-columns: 1fr; } }
 
 /* Shared field and list rhythm */
+textarea { font: inherit; width: 100%; margin-top: .4rem; padding: .7rem .75rem; color: inherit; background: #171a21; border: 1px solid #414550; border-radius: 8px; resize: vertical; }
+textarea:focus-visible { outline: 3px solid #aab3ff; outline-offset: 2px; }
+#queue .form-grid { align-items: start; }
+#queue .form-grid > * { min-width: 0; }
+.queue-message-field, .queue-actions { grid-column: 1 / -1; }
+.queue-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; }
+#queue .form-grid small { font-weight: 400; }
+.queue-message { white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem 0 0; line-height: 1.5; }
+#queue .user-row { align-items: start; }
+#queue .user-row > button { flex: none; }
+@media (max-width: 540px) { .queue-actions > button, #queue .user-row > button { width: 100%; } }
 .card > h2 { margin-bottom: .45rem; }
 .card > .muted { margin: .25rem 0 1rem; }
 .form-grid label, .filters label { margin: 0; }

@@ -62,7 +62,18 @@
         <label>Special admin role ID<input name="specialRoleId" required pattern="[0-9]{17,20}"><small data-resolved="specialRoleId"></small></label>
         <label>Guild ID<input name="guildId" pattern="[0-9]{17,20}"><small data-resolved="guildId"></small><small>Optional; blank disables the default guild.</small></label><button class="primary">Save configuration</button></form></article></section>
       <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><ol id="scores" class="score-list"></ol></article></section>
-      <section id="queue" class="tab"><article class="card"><h2>Next-reply queue</h2><div id="queue-list" class="user-list"></div><p class="muted">Queue changes are managed in Discord.</p></article></section>
+      <section id="queue" class="tab">
+        <article class="card"><h2>Queue a reply</h2><p class="muted">Used for the next qualifying auto-response, optionally reserved for one user.</p>
+          <form id="queue-form" class="form-grid">
+            <label class="queue-message-field">Message<textarea id="queue-message" rows="5" maxlength="2000" required placeholder="What should Riyad say next?"></textarea></label>
+            <label>Server<select id="queue-guild"></select><small>Used only for member search.</small></label>
+            <div class="member-picker"><label for="queue-member-search">Find server member <span class="muted">(optional)</span></label><input id="queue-member-search" type="search" placeholder="Username or Discord ID" autocomplete="off" maxlength="64" aria-controls="queue-member-results" aria-describedby="queue-member-help"><div id="queue-member-results" class="member-results" aria-live="polite"></div><small id="queue-member-help">Select a member or paste their Discord ID below.</small></div>
+            <label>Target user ID <span class="muted">(optional)</span><input id="queue-user" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Any user" aria-describedby="queue-target-help"><small id="queue-target-help">Leave blank for any user.</small></label>
+            <div class="queue-actions"><button id="queue-clear-user" type="button">Clear target · any user</button><button id="queue-add" class="primary" type="submit">Add reply</button></div>
+          </form>
+        </article>
+        <article class="card"><h2>Next-reply queue</h2><div id="queue-list" class="user-list"></div></article>
+      </section>
       <footer><button id="backup" class="quiet">Download database backup</button><span class="muted">Private dashboard · localhost</span></footer>
     </section>
   </main>
