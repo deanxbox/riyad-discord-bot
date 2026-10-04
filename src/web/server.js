@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PermissionsBitField } from 'discord.js';
+import { SCAN_MIN_USERS } from '../services/download-jobs.js';
 
 const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
 const snowflake = /^\d{17,20}$/;
@@ -35,6 +36,9 @@ function validateChannelIds(value, guild, client) {
   return [...value];
 }
 export function isStaticPathSafe(value) { return staticFiles.has(value); }
+function scanChannelIds(guild, client, selected) {
+  return selected.length ? selected : readableTextChannels(guild, client).map(channel => channel.id);
+}
 export function validateSetting(key, value) {
   if (key === 'replyChancePercent' && Number.isInteger(value) && value >= 0 && value <= 100) return value;
   if (key === 'reactionChanceDenominator' && Number.isInteger(value) && value >= 1 && value <= 1000000) return value;
@@ -391,8 +395,13 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         } else {
           const channelIds = validateChannelIds(data.channelIds, client.guilds.cache.get(guildId), client);
           let started = 0;
-          for (const id of data.userIds) {
-            if (downloadJobs.startHeadless({ guildId, targetUserId: id, requestedById: config.specialUserId, limit: null, channelIds }).created) started++;
+          if (data.userIds.length >= SCAN_MIN_USERS && downloadJobs.startScan) {
+            // One shared pass over the channels serves every selected user.
+            started = downloadJobs.startScan({ guildId, requestedById: config.specialUserId, targetUserIds: data.userIds, channelIds: scanChannelIds(client.guilds.cache.get(guildId), client, channelIds) }).created;
+          } else {
+            for (const id of data.userIds) {
+              if (downloadJobs.startHeadless({ guildId, targetUserId: id, requestedById: config.specialUserId, limit: null, channelIds }).created) started++;
+            }
           }
           json(response, 202, { started, skipped: data.userIds.length - started });
         }
@@ -430,6 +439,12 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           (data.limit != null && (!Number.isSafeInteger(data.limit) || data.limit < 1))) throw new RangeError('Invalid refresh request.');
         const channelIds = validateChannelIds(data.channelIds, client.guilds.cache.get(guildId), client);
         void (async () => {
+          const tracked = store.listTrackedUsers().filter(userId => !downloadJobs.getJobStatus(guildId, userId));
+          if (data.limit == null && tracked.length >= SCAN_MIN_USERS && downloadJobs.startScan) {
+            const { jobs } = downloadJobs.startScan({ guildId, requestedById: config.specialUserId, targetUserIds: tracked, channelIds: scanChannelIds(client.guilds.cache.get(guildId), client, channelIds) });
+            await Promise.all(jobs.map(job => job.completion));
+            return;
+          }
           for (const [i, userId] of store.listTrackedUsers().entries()) {
             if (i) await new Promise(resolve => setTimeout(resolve, 500));
             if (store.isTracked(userId) && !downloadJobs.getJobStatus(guildId, userId)) {

@@ -2,6 +2,7 @@ import { Routes } from 'discord-api-types/v10';
 
 const SEARCH_INDEX_NOT_READY_CODE = 110000;
 const PAGE_SIZE = 25;
+const CHANNEL_PAGE_SIZE = 100;
 const TRANSIENT_RETRIES = 3;
 
 export class DownloadCancelledError extends Error {
@@ -328,6 +329,74 @@ export async function downloadUserHistory({
     };
   } catch (error) {
     store.discardStagedUserDownload(jobId);
+    throw error;
+  }
+}
+
+// One shared pass over each channel's history for many users at once. Cost scales with channel
+// size, not user count, so it beats per-user search once several users are selected.
+// Matches are staged per user and only merged into the archive when the pass finishes.
+export async function scanChannelsForUsers({ client, guildId, channelIds, targets, store, onProgress = async () => {} }) {
+  const users = new Map(targets.map(target => [target.userId, { ...target, mediaSkipped: 0, downloadedCount: 0 }]));
+  const active = () => [...users.values()].filter(user => !user.signal.aborted);
+  let requestsMade = 0, scannedCount = 0, skippedChannels = 0;
+  for (const user of users.values()) store.beginStagedUserDownload(user.jobId, user.userId);
+
+  try {
+    for (const channelId of channelIds) {
+      let before = null;
+      while (active().length) {
+        let page;
+        try {
+          const query = new URLSearchParams({ limit: String(CHANNEL_PAGE_SIZE) });
+          if (before) query.set('before', before);
+          page = await client.rest.get(Routes.channelMessages(channelId), { query });
+        } catch (error) {
+          const status = error.status ?? error.statusCode ?? error.rawError?.status;
+          if (status === 403 || status === 404) { skippedChannels++; break; } // no access / deleted
+          throw error;
+        }
+        requestsMade++;
+        if (!Array.isArray(page) || page.length === 0) break;
+        scannedCount += page.length;
+
+        const matches = new Map();
+        for (const message of page) {
+          const user = users.get(message?.author?.id);
+          if (!user || user.signal.aborted) continue;
+          const kind = classifySearchMessage(message, user.userId);
+          if (kind === 'text') {
+            if (!matches.has(user.userId)) matches.set(user.userId, []);
+            matches.get(user.userId).push(toStoredMessage(message, guildId));
+          } else if (kind === 'media-only') user.mediaSkipped++;
+        }
+        for (const [userId, stored] of matches) {
+          const user = users.get(userId);
+          if (!user.signal.aborted) user.downloadedCount += store.addStagedDownloadedMessages(user.jobId, userId, stored);
+        }
+
+        const nextBefore = page.at(-1).id;
+        if (before && BigInt(nextBefore) >= BigInt(before)) throw new Error('Discord channel pagination did not advance.');
+        before = nextBefore;
+        await onProgress({ requestsMade, scannedCount, skippedChannels, channelId, users });
+        if (page.length < CHANNEL_PAGE_SIZE) break;
+      }
+      if (!active().length) break;
+    }
+
+    const results = [];
+    for (const user of users.values()) {
+      if (user.signal.aborted) {
+        store.discardStagedUserDownload(user.jobId);
+        results.push({ userId: user.userId, cancelled: true });
+        continue;
+      }
+      const downloadedCount = store.commitStagedUserDownload(user.jobId, user.userId, 0, { guildId, merge: true });
+      results.push({ userId: user.userId, cancelled: false, downloadedCount, mediaSkipped: store.getUserSummary(user.userId).mediaSkipped });
+    }
+    return { results, requestsMade, scannedCount, skippedChannels };
+  } catch (error) {
+    for (const user of users.values()) store.discardStagedUserDownload(user.jobId);
     throw error;
   }
 }

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DataStore } from '../src/services/data-store.js';
 import { DownloadJobManager } from '../src/services/download-jobs.js';
-import { DownloadCancelledError, downloadUserHistory } from '../src/services/history-downloader.js';
+import { DownloadCancelledError, downloadUserHistory, scanChannelsForUsers } from '../src/services/history-downloader.js';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'riyad-download-'));
 const store = new DataStore(path.join(dir, 'test.sqlite'));
@@ -178,6 +178,29 @@ try {
   await resumed.completion;
   assert.equal(store.getSavedDownloadJobs().length, 0, 'finished jobs are removed from persistence');
   assert.equal(store.exportUserMessages(userId).length, 60, 'resume yields the full archive without duplicates');
+  // Shared channel scan: one pass over the channel serves every selected user.
+  const scanAuthors = ['501', '502', '503'];
+  const channelMessages = Array.from({ length: 250 }, (_, i) => ({
+    id: String(2000 - i), author: { id: scanAuthors[i % 3] }, content: i % 10 === 0 ? '' : `scan-${i}`,
+    attachments: i % 10 === 0 ? [{}] : [], channel_id: '700', timestamp: '2026-01-01T00:00:00.000Z',
+  }));
+  const scanRequests = [];
+  const scanClient = { rest: { get: async (route, { query: params }) => {
+    scanRequests.push(params.get('before'));
+    assert.equal(params.get('limit'), '100');
+    return channelMessages.filter(item => !params.has('before') || BigInt(item.id) < BigInt(params.get('before'))).slice(0, 100);
+  } } };
+  const never = new AbortController().signal, stop = new AbortController();
+  const scan = await scanChannelsForUsers({
+    client: scanClient, guildId, channelIds: ['700'], store,
+    targets: [{ userId: '501', jobId: 'scan-501', signal: never }, { userId: '502', jobId: 'scan-502', signal: never }, { userId: '503', jobId: 'scan-503', signal: stop.signal }],
+    onProgress: async () => stop.abort(),
+  });
+  assert.equal(scanRequests.length, 3, 'one pass over the channel serves every user');
+  assert.equal(scan.results.find(r => r.userId === '503').cancelled, true, 'a cancelled user is dropped without stopping the others');
+  assert.equal(store.getUserSummary('503').messageCount, 0);
+  assert.equal(store.getUserSummary('501').messageCount + store.getUserSummary('502').messageCount, 150, 'selected users get their text messages');
+  assert.equal(store.exportUserMessages('501')[0].guild_id, guildId, 'scanned rows record the server');
   console.log('Download self-check passed: paging, incremental refresh, cancellation, and bounded jobs.');
 } finally {
   store.close();

@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
-import { createSearchLimiter, DownloadCancelledError, downloadUserHistory } from './history-downloader.js';
+import { createSearchLimiter, DownloadCancelledError, downloadUserHistory, scanChannelsForUsers } from './history-downloader.js';
 
 const CANCEL_PREFIX = 'download-cancel:';
 const RENDER_INTERVAL_MS = 1500;
+// A shared channel scan beats one search per user once this many users are selected.
+export const SCAN_MIN_USERS = 2;
 
 function formatCount(value) {
   return new Intl.NumberFormat('en-GB').format(value);
@@ -121,6 +123,7 @@ export class DownloadJobManager extends EventEmitter {
     this.jobsByTarget = new Map();
     this.runningCount = 0;
     this.pending = [];
+    this.scanTail = Promise.resolve();
     this.deletingUsers = new Set();
     this.searchRequest = createSearchLimiter(client.rest);
     this.publishProgress = createProgressPublisher(change => this.emit('change', change));
@@ -195,6 +198,7 @@ export class DownloadJobManager extends EventEmitter {
     job.status = 'cancel_requested';
     this.publishProgress(job, 'status');
     job.abortController.abort();
+    if (job.scan) { this.finishScanJob(job, 'cancelled'); return { cancelled: true, job }; }
     const queuedIndex = this.pending.indexOf(job);
     if (queuedIndex !== -1) {
       this.pending.splice(queuedIndex, 1);
@@ -278,10 +282,69 @@ export class DownloadJobManager extends EventEmitter {
     return { job, created: true };
   }
 
-  track(job) {
+  // One shared channel scan for many users; each user still gets its own visible, cancellable job.
+  startScan({ guildId, requestedById, targetUserIds, channelIds }) {
+    const jobs = [];
+    for (const targetUserId of targetUserIds) {
+      if (this.deletingUsers.has(targetUserId) || this.getActiveJob(guildId, targetUserId)) continue;
+      const job = this.createJob({ guildId, requestedById, targetUserId, limit: null, channelIds });
+      Object.assign(job, { scan: true, scannedCount: 0, finished: false, status: 'queued' });
+      this.track(job, { persist: false }); // not resumable: a restart simply drops the scan
+      jobs.push(job);
+    }
+    if (jobs.length) {
+      this.scanTail = this.scanTail.then(() => this.runScan(jobs, guildId, channelIds)).catch(() => {});
+    }
+    return { created: jobs.length, jobs };
+  }
+
+  async runScan(jobs, guildId, channelIds) {
+    const live = jobs.filter(job => !job.finished);
+    if (!live.length) return;
+    const byUser = new Map(live.map(job => [job.targetUserId, job]));
+    for (const job of live) { job.status = 'running'; this.publishProgress(job, 'status'); }
+    try {
+      const outcome = await scanChannelsForUsers({
+        client: this.client, guildId, channelIds, store: this.store,
+        targets: live.map(job => ({ userId: job.targetUserId, jobId: job.id, signal: job.abortController.signal })),
+        onProgress: async ({ requestsMade, scannedCount, users }) => {
+          for (const [userId, user] of users) {
+            const job = byUser.get(userId);
+            if (!job || job.finished) continue;
+            Object.assign(job, { downloadedCount: user.downloadedCount, mediaSkipped: user.mediaSkipped, requestsMade, scannedCount });
+            this.publishProgress(job, 'progress');
+          }
+        },
+      });
+      for (const result of outcome.results) {
+        const job = byUser.get(result.userId);
+        if (!job || job.finished) continue;
+        if (result.cancelled) { this.finishScanJob(job, 'cancelled'); continue; }
+        Object.assign(job, { downloadedCount: result.downloadedCount, mediaSkipped: result.mediaSkipped, requestsMade: outcome.requestsMade, scannedCount: outcome.scannedCount, incremental: true });
+        this.finishScanJob(job, 'completed');
+      }
+    } catch (error) {
+      console.error('Channel scan failed', error);
+      for (const job of live) this.finishScanJob(job, 'failed', error);
+    }
+  }
+
+  finishScanJob(job, status, error = null) {
+    if (job.finished) return;
+    job.finished = true;
+    job.status = status;
+    job.retryAfterSeconds = 0;
+    if (error) job.errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    this.publishProgress(job, 'finished');
+    if (this.jobsByTarget.get(this.targetKey(job.guildId, job.targetUserId)) === job.id) this.jobsByTarget.delete(this.targetKey(job.guildId, job.targetUserId));
+    this.jobs.delete(job.id);
+    job.resolveCompletion({ ok: status === 'completed', cancelled: status === 'cancelled', error, job });
+  }
+
+  track(job, { persist = true } = {}) {
     this.jobs.set(job.id, job);
     this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
-    this.store.saveDownloadJob(job);
+    if (persist) this.store.saveDownloadJob(job);
     this.publishProgress(job, 'created');
   }
 
