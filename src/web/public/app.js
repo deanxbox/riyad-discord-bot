@@ -167,7 +167,7 @@ function renderUsers() {
   updateSelection(users);
   if (!users.length) list.append(node('p', query ? 'No users match this search.' : 'No users to manage yet.', 'empty-state'));
 }
-function sourceName(source) { return source.guildName || (source.guildId ? `Unknown server (${source.guildId})` : 'Legacy import (server not recorded)'); }
+function sourceName(source) { return source.guildName || (source.guildId ? `Unknown server (${source.guildId})` : source.legacy ? 'Legacy import (no server recorded)' : 'Server not recorded'); }
 function sourceChips(u) {
   const chips = node('div', '', 'source-chips');
   chips.append(node('small', 'Downloaded from:'));

@@ -252,7 +252,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         const users = await Promise.all([...ids].map(async id => {
           const { userId, ...summary } = store.getUserSummary(id);
           const downloadedFrom = (sources.get(id) || [])
-            .map(({ guildId: sourceGuildId, count }) => ({ guildId: sourceGuildId, guildName: sourceGuildId ? client?.guilds?.cache?.get(sourceGuildId)?.name ?? null : null, count }))
+            .map(({ guildId: sourceGuildId, legacy, count }) => ({ guildId: sourceGuildId, legacy, guildName: sourceGuildId ? client?.guilds?.cache?.get(sourceGuildId)?.name ?? null : null, count }))
             .sort((a, b) => b.count - a.count);
           return { ...summary, user: await resolveUser(id), downloadedFrom };
         }));

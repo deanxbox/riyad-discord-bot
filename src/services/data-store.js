@@ -591,17 +591,26 @@ export class DataStore extends EventEmitter {
 
   getMessageSources() {
     this.messageSourcesStmt ??= this.db.prepare(`
-      SELECT user_id, guild_id, COUNT(*) AS count
+      SELECT user_id, guild_id, message_id LIKE 'legacy-%' AS legacy, COUNT(*) AS count
       FROM user_messages
-      GROUP BY user_id, guild_id
+      GROUP BY user_id, guild_id, legacy
     `);
     const sources = new Map();
     for (const row of this.messageSourcesStmt.all()) {
       const list = sources.get(String(row.user_id)) ?? [];
-      list.push({ guildId: row.guild_id ? String(row.guild_id) : null, count: Number(row.count) || 0 });
+      list.push({ guildId: row.guild_id ? String(row.guild_id) : null, legacy: Boolean(row.legacy), count: Number(row.count) || 0 });
       sources.set(String(row.user_id), list);
     }
     return sources;
+  }
+
+  // Channel IDs of downloaded messages that still have no recorded server.
+  listUnassignedChannelIds() {
+    return this.db.prepare('SELECT DISTINCT channel_id FROM user_messages WHERE guild_id IS NULL AND channel_id IS NOT NULL').all().map((row) => String(row.channel_id));
+  }
+
+  assignGuildToChannel(channelId, guildId) {
+    return this.db.prepare('UPDATE user_messages SET guild_id = ? WHERE guild_id IS NULL AND channel_id = ?').run(String(guildId), String(channelId)).changes;
   }
 
   listNerdedUsers() {

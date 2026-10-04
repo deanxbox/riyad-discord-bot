@@ -73,4 +73,10 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 await client.login(config.token);
+
+// Older downloads stored no server ID; resolve it from each message's channel.
+for (const channelId of store.listUnassignedChannelIds()) {
+  const channel = client.channels.cache.get(channelId) ?? await client.channels.fetch(channelId).catch(() => null);
+  if (channel?.guildId) store.assignGuildToChannel(channelId, channel.guildId);
+}
 downloadJobs.resumeSavedJobs();

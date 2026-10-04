@@ -497,7 +497,7 @@ async function main() {
     const sourceUserId = '923456789012345678';
     store.addDownloadedMessages(sourceUserId, [{ messageId: '900000000000000001', guildId: guild.id, channelId: '323456789012345678', content: 'from guild', createdAt: new Date().toISOString() }]);
     const sourceState = await (await api('/api/state')).json();
-    assert.deepEqual(sourceState.users.find(user => user.user.id === sourceUserId).downloadedFrom, [{ guildId: guild.id, guildName: 'Test guild', count: 1 }], 'users list shows named source servers');
+    assert.deepEqual(sourceState.users.find(user => user.user.id === sourceUserId).downloadedFrom, [{ guildId: guild.id, legacy: false, guildName: 'Test guild', count: 1 }], 'users list shows named source servers');
     store.deleteUserData(sourceUserId);
     assert.equal((await fetch(base + '/api/lookup?type=guild&query=test')).status, 401, 'lookup requires authentication');
     assert.equal((await api('/api/lookup?type=bogus&query=test')).status, 400, 'lookup rejects unknown types');
