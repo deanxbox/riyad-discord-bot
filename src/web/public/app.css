@@ -124,3 +124,4 @@ textarea:focus-visible { outline: 3px solid #aab3ff; outline-offset: 2px; }
 @media (max-width: 850px) { #downloads .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } #downloads .download-limit-field { grid-column: auto; } }
 @media (max-width: 650px) { .download-scope { grid-template-columns: 1fr; } }
 @media (max-width: 540px) { #downloads .form-grid { grid-template-columns: 1fr; } .download-refresh > button { width: 100%; } }
+.st-starting,.st-queued{background:#343944;color:#c4c9d4}.st-running{background:#1f3a5c;color:#8cc4ff}.st-indexing,.st-rate_limited{background:#4d3d1a;color:#ffd27a}.st-cancel_requested,.st-cancelled{background:#4a3320;color:#ffb877}.st-completed{background:#1e4937;color:#8df0bb}.st-failed{background:#5a2530;color:#ff9eaa}

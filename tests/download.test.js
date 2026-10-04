@@ -155,6 +155,29 @@ try {
   release();
   await Promise.all(jobs.slice(0, 3).map(job => job.completion));
   assert.equal(peak, 1);
+
+  // Restart: a job interrupted mid-download resumes from its saved cursor, not from scratch.
+  messages = Array.from({ length: 60 }, (_, i) => message(1060 - i));
+  const first = new DownloadJobManager({ client, config: {}, store });
+  const crash = first.createJob({ guildId, requestedById: userId, targetUserId: userId, limit: null });
+  store.saveDownloadJob(crash);
+  const cut = new AbortController();
+  await assert.rejects(downloadUserHistory({
+    client, guildId, targetUserId: userId, limit: null, store, jobId: crash.id, signal: cut.signal,
+    onProgress: async p => { if (p.requestsMade === 1) { crash.resume = store.getSavedDownloadJobs()[0].resume; cut.abort(); } },
+  }), DownloadCancelledError);
+  // abort discards staging like a cancel; simulate a hard kill by re-staging what a page would have saved
+  store.beginStagedUserDownload(crash.id, userId);
+  store.addStagedDownloadedMessages(crash.id, userId, [{ messageId: '1060', userId, guildId, channelId: '300', content: 'x', createdAt: 'z' }],
+    { maxId: '1060', scannedCount: 1, mediaSkipped: 0, newestId: '1060', totalResults: 60, requestsMade: 1, checkpoint: null, reachedCheckpoint: false });
+  const second = new DownloadJobManager({ client, config: {}, store });
+  second.resumeSavedJobs();
+  const resumed = second.getActiveJob(guildId, userId);
+  assert.equal(resumed.id, crash.id);
+  assert.equal(resumed.downloadedCount, 1);
+  await resumed.completion;
+  assert.equal(store.getSavedDownloadJobs().length, 0, 'finished jobs are removed from persistence');
+  assert.equal(store.exportUserMessages(userId).length, 60, 'resume yields the full archive without duplicates');
   console.log('Download self-check passed: paging, incremental refresh, cancellation, and bounded jobs.');
 } finally {
   store.close();

@@ -105,8 +105,18 @@ export class DataStore extends EventEmitter {
       );
     `);
 
+    // Staged rows of unfinished jobs are kept so they can resume after a restart.
     this.db.exec(`
-      DELETE FROM download_staging_messages;
+      CREATE TABLE IF NOT EXISTS download_jobs (
+        id TEXT PRIMARY KEY,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        requested_by TEXT,
+        limit_count INTEGER,
+        channel_ids TEXT NOT NULL,
+        state TEXT
+      );
+      DELETE FROM download_staging_messages WHERE job_id NOT IN (SELECT id FROM download_jobs);
     `);
   }
 
@@ -684,8 +694,24 @@ export class DataStore extends EventEmitter {
     });
   }
 
-  addStagedDownloadedMessages(jobId, userId, messages) {
-    if (!messages.length) {
+  saveDownloadJob(job) {
+    this.db.prepare('INSERT OR REPLACE INTO download_jobs (id, guild_id, user_id, requested_by, limit_count, channel_ids, state) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(job.id, job.guildId, job.targetUserId, job.requestedById ?? null, job.limit, JSON.stringify(job.channelIds), job.resume ? JSON.stringify(job.resume) : null);
+  }
+
+  deleteDownloadJob(jobId) {
+    this.db.prepare('DELETE FROM download_jobs WHERE id = ?').run(String(jobId));
+  }
+
+  getSavedDownloadJobs() {
+    return this.db.prepare('SELECT * FROM download_jobs').all().map(row => ({
+      id: row.id, guildId: row.guild_id, targetUserId: row.user_id, requestedById: row.requested_by,
+      limit: row.limit_count, channelIds: JSON.parse(row.channel_ids), resume: row.state ? JSON.parse(row.state) : null,
+    }));
+  }
+
+  addStagedDownloadedMessages(jobId, userId, messages, state = null) {
+    if (!messages.length && !state) {
       return 0;
     }
 
@@ -709,6 +735,7 @@ export class DataStore extends EventEmitter {
 
         insertedCount += result.changes;
       }
+      if (state) this.db.prepare('UPDATE download_jobs SET state = ? WHERE id = ?').run(JSON.stringify(state), normalizedJobId);
     });
 
     return insertedCount;
@@ -819,6 +846,7 @@ export class DataStore extends EventEmitter {
     this.transaction(() => {
       this.deleteMetadataStmt.run(`download_checkpoint:${normalizedUserId}`);
       this.deleteUserStagingStmt.run(normalizedUserId);
+      this.db.prepare('DELETE FROM download_jobs WHERE user_id = ?').run(normalizedUserId);
       this.deleteUserTriviaStmt.run(normalizedUserId);
       this.deleteUserSettingsStmt.run(normalizedUserId); // cascades archived messages
     });

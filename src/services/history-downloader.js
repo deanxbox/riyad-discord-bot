@@ -188,24 +188,26 @@ export async function downloadUserHistory({
   signal,
   onProgress,
   searchRequest,
+  resume = null,
 }) {
-  let downloadedCount = 0;
-  let mediaSkipped = 0;
-  let scannedCount = 0;
-  let discoveredTotalResults = null;
-  let requestsMade = 0;
-  let maxId = null;
-  let newestId = null;
   const scoped = channelIds.length > 0;
-  const checkpoint = limit === null && !scoped ? store.getUserDownloadCheckpoint(targetUserId, guildId) : null;
+  // `resume` is the cursor persisted with the staged rows by a previous run of this job.
+  const checkpoint = resume ? resume.checkpoint : limit === null && !scoped ? store.getUserDownloadCheckpoint(targetUserId, guildId) : null;
+  let downloadedCount = resume ? store.getStagedDownloadCount(jobId) : 0;
+  let mediaSkipped = resume?.mediaSkipped ?? 0;
+  let scannedCount = resume?.scannedCount ?? 0;
+  let discoveredTotalResults = resume?.totalResults ?? null;
+  let requestsMade = resume?.requestsMade ?? 0;
+  let maxId = resume?.maxId ?? null;
+  let newestId = resume?.newestId ?? null;
   let exhausted = false;
-  let reachedCheckpoint = false;
+  let reachedCheckpoint = resume?.reachedCheckpoint ?? false;
 
   throwIfCancelled(signal);
-  store.beginStagedUserDownload(jobId, targetUserId);
+  if (!resume) store.beginStagedUserDownload(jobId, targetUserId);
 
   try {
-    while (limit === null || scannedCount < limit) {
+    while (!reachedCheckpoint && (limit === null || scannedCount < limit)) {
       throwIfCancelled(signal);
 
       const pageSize = limit === null ? PAGE_SIZE : Math.min(PAGE_SIZE, limit - scannedCount);
@@ -272,14 +274,16 @@ export async function downloadUserHistory({
       const matchingMessages = targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'text').map(toStoredMessage);
       mediaSkipped += targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'media-only').length;
 
-      const insertedCount = store.addStagedDownloadedMessages(jobId, targetUserId, matchingMessages);
-      downloadedCount += insertedCount;
       const nextMaxId = pageMessages.at(-1)?.id ?? null;
       if (maxId && nextMaxId && BigInt(nextMaxId) >= BigInt(maxId)) {
         throw new Error('Discord search pagination did not advance.');
       }
       maxId = nextMaxId;
       reachedCheckpoint = Boolean(checkpoint && maxId && BigInt(maxId) <= BigInt(checkpoint));
+      const insertedCount = store.addStagedDownloadedMessages(jobId, targetUserId, matchingMessages, {
+        maxId, scannedCount, mediaSkipped, newestId, totalResults: discoveredTotalResults, requestsMade, checkpoint, reachedCheckpoint,
+      });
+      downloadedCount += insertedCount;
 
       await onProgress({
         status: 'running',

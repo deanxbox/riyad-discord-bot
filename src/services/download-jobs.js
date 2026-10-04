@@ -135,7 +135,7 @@ export class DownloadJobManager extends EventEmitter {
     return jobId ? this.jobs.get(jobId) ?? null : null;
   }
 
-  createJob({ guildId, requestedById, targetUserId, limit, channelIds = [], onProgress = null }) {
+  createJob({ id = randomUUID(), guildId, requestedById, targetUserId, limit, channelIds = [], onProgress = null, resume = null }) {
     let resolveCompletion;
 
     const completion = new Promise((resolve) => {
@@ -143,7 +143,8 @@ export class DownloadJobManager extends EventEmitter {
     });
 
     return {
-      id: randomUUID(),
+      id,
+      resume,
       guildId,
       requestedById,
       targetUserId,
@@ -240,9 +241,7 @@ export class DownloadJobManager extends EventEmitter {
       limit,
     });
 
-    this.jobs.set(job.id, job);
-    this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
-    this.publishProgress(job, 'created');
+    this.track(job);
 
     await interaction.editReply({
       content: formatStatus(job),
@@ -273,13 +272,32 @@ export class DownloadJobManager extends EventEmitter {
       onProgress,
     });
 
-    this.jobs.set(job.id, job);
-    this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
-    this.publishProgress(job, 'created');
-
+    this.track(job);
     this.schedule(job);
 
     return { job, created: true };
+  }
+
+  track(job) {
+    this.jobs.set(job.id, job);
+    this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
+    this.store.saveDownloadJob(job);
+    this.publishProgress(job, 'created');
+  }
+
+  // Call once after login: restart jobs a previous process left unfinished.
+  resumeSavedJobs() {
+    for (const saved of this.store.getSavedDownloadJobs()) {
+      if (this.getActiveJob(saved.guildId, saved.targetUserId)) { this.store.deleteDownloadJob(saved.id); continue; }
+      const job = this.createJob(saved);
+      if (saved.resume) {
+        Object.assign(job, { downloadedCount: this.store.getStagedDownloadCount(job.id), mediaSkipped: saved.resume.mediaSkipped, totalResults: saved.resume.totalResults, requestsMade: saved.resume.requestsMade });
+      }
+      this.jobs.set(job.id, job);
+      this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
+      this.publishProgress(job, 'created');
+      this.schedule(job);
+    }
   }
 
   async handleButton(interaction) {
@@ -352,6 +370,7 @@ export class DownloadJobManager extends EventEmitter {
         jobId: job.id,
         signal: job.abortController.signal,
         searchRequest: this.searchRequest,
+        resume: job.resume,
         onProgress: async ({
           status,
           downloadedCount,
@@ -411,6 +430,7 @@ export class DownloadJobManager extends EventEmitter {
         job.resolveCompletion({ ok: false, cancelled: false, error, job });
       }
     } finally {
+      this.store.deleteDownloadJob(job.id);
       this.jobsByTarget.delete(this.targetKey(job.guildId, job.targetUserId));
       this.jobs.delete(job.id);
     }

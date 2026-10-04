@@ -73,3 +73,4 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 await client.login(config.token);
+downloadJobs.resumeSavedJobs();

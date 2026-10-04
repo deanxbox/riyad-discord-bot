@@ -179,7 +179,7 @@ function renderJobs(jobs) {
     const row = document.createElement('div'); row.className = 'user-row';
     const main = document.createElement('div'); main.className = 'user-main';
     const goal = j.limit === null ? j.totalResults : Math.min(j.limit, j.totalResults ?? j.limit);
-    main.append(node('strong', person(j.target)), node('small', `${j.status} · ${j.downloadedCount} text messages stored, ${j.mediaSkipped} media-only skipped · ${j.downloadedCount + j.mediaSkipped} / ${goal ?? '…'} search results · requested by ${person(j.requestedBy)}`));
+    main.append(node('strong', person(j.target)), node('span', j.status.replace(/_/g, ' '), `badge st-${j.status}`), node('small', `${j.downloadedCount} text messages stored, ${j.mediaSkipped} media-only skipped · ${j.downloadedCount + j.mediaSkipped} / ${goal ?? '…'} search results · requested by ${person(j.requestedBy)}`));
     if (j.retryAfterSeconds && ['indexing', 'rate_limited'].includes(j.status)) main.append(node('small', `Waiting ${j.retryAfterSeconds}s for Discord`));
     if (j.currentMessage) main.append(node('small', `${j.currentMessage.author} · ${j.currentMessage.timestamp ? new Date(j.currentMessage.timestamp).toLocaleString() : 'Unknown time'} · ${j.currentMessage.content || '[media-only]'}`, 'job-preview'));
     const cancel = node('button', 'Cancel'); cancel.onclick = async () => { try { await api(`/api/downloads/${j.guildId}/${j.target.id}`, { method: 'DELETE' }); await refresh(); } catch (e) { fail(e); } };
