@@ -126,6 +126,20 @@ export class DataStore extends EventEmitter {
   runMigrations() {
     this.addColumnIfMissing('user_settings', 'reply_chance_override', 'INTEGER');
     this.addColumnIfMissing('user_settings', 'media_skipped', 'INTEGER NOT NULL DEFAULT 0');
+    this.backfillMessageGuilds();
+  }
+
+  // Earlier downloads stored NULL guild_id. The per-user download checkpoint ("guildId:messageId")
+  // records the guild that was searched, so use it for non-legacy rows only.
+  backfillMessageGuilds() {
+    const rows = this.db.prepare("SELECT key, value FROM metadata WHERE key LIKE 'download_checkpoint:%'").all();
+    const update = this.db.prepare("UPDATE user_messages SET guild_id = ? WHERE user_id = ? AND guild_id IS NULL AND message_id NOT LIKE 'legacy-%'");
+    this.transaction(() => {
+      for (const { key, value } of rows) {
+        const [guildId] = String(value).split(':');
+        if (/^\d{17,20}$/.test(guildId)) update.run(guildId, key.slice('download_checkpoint:'.length));
+      }
+    });
   }
 
   prepareStatements() {

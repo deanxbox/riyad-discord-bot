@@ -76,11 +76,12 @@ export function classifySearchMessage(message, targetUserId) {
   return 'ignored';
 }
 
-function toStoredMessage(message) {
+function toStoredMessage(message, searchedGuildId = null) {
   return {
     messageId: message.id,
     userId: message.author.id,
-    guildId: message.guild_id ?? message.guildId ?? null,
+    // Guild search results omit guild_id, so fall back to the guild that was searched.
+    guildId: message.guild_id ?? message.guildId ?? searchedGuildId ?? null,
     channelId: message.channel_id ?? message.channelId,
     content: message.content,
     createdAt: message.timestamp ?? message.createdAt ?? new Date().toISOString(),
@@ -271,7 +272,7 @@ export async function downloadUserHistory({
         ? pageMessages.filter((message) => BigInt(message.id) > BigInt(checkpoint))
         : pageMessages;
       scannedCount += targetMessages.length;
-      const matchingMessages = targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'text').map(toStoredMessage);
+      const matchingMessages = targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'text').map((message) => toStoredMessage(message, guildId));
       mediaSkipped += targetMessages.filter((message) => classifySearchMessage(message, targetUserId) === 'media-only').length;
 
       const nextMaxId = pageMessages.at(-1)?.id ?? null;
