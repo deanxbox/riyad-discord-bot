@@ -74,6 +74,9 @@ export class DataStore extends EventEmitter {
       CREATE INDEX IF NOT EXISTS idx_user_messages_user_id
       ON user_messages (user_id);
 
+      CREATE INDEX IF NOT EXISTS idx_user_messages_user_guild
+      ON user_messages (user_id, guild_id);
+
       CREATE TABLE IF NOT EXISTS download_staging_messages (
         job_id TEXT NOT NULL,
         message_id TEXT NOT NULL,
@@ -570,6 +573,21 @@ export class DataStore extends EventEmitter {
 
   listUserIds() {
     return this.userSettingsStmt.all().map((row) => String(row.user_id)).sort();
+  }
+
+  getMessageSources() {
+    this.messageSourcesStmt ??= this.db.prepare(`
+      SELECT user_id, guild_id, COUNT(*) AS count
+      FROM user_messages
+      GROUP BY user_id, guild_id
+    `);
+    const sources = new Map();
+    for (const row of this.messageSourcesStmt.all()) {
+      const list = sources.get(String(row.user_id)) ?? [];
+      list.push({ guildId: row.guild_id ? String(row.guild_id) : null, count: Number(row.count) || 0 });
+      sources.set(String(row.user_id), list);
+    }
+    return sources;
   }
 
   listNerdedUsers() {

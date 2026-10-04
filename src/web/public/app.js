@@ -157,6 +157,7 @@ function renderUsers() {
     check.onchange = () => { if (check.checked) selectedUsers.add(u.user.id); else selectedUsers.delete(u.user.id); updateSelection(users); };
     row.append(check, avatar(u.user));
     const main = document.createElement('div'); main.className = 'user-main'; main.append(node('strong', person(u.user)), node('small', `${u.messageCount} text stored · ${u.lastDownloadedAt ? new Date(u.lastDownloadedAt).toLocaleString() : 'Never downloaded'} · ${u.user.id}`)); main.title = `${person(u.user)} · ${u.user.id}`;
+    main.append(sourceChips(u));
     const status = document.createElement('div'); status.className = 'user-status';
     status.append(node('span', `${u.mediaSkipped} media-only skipped`, 'badge'), node('span', u.tracked ? 'Tracked' : 'Not tracked', `badge ${u.tracked ? 'green' : ''}`));
     if (u.nerded) status.append(node('span', 'Nerded', 'badge'));
@@ -165,6 +166,43 @@ function renderUsers() {
   }));
   updateSelection(users);
   if (!users.length) list.append(node('p', query ? 'No users match this search.' : 'No users to manage yet.', 'empty-state'));
+}
+function sourceName(source) { return source.guildName || (source.guildId ? `Unknown server (${source.guildId})` : 'Unknown server'); }
+function sourceChips(u) {
+  const chips = node('div', '', 'source-chips');
+  chips.append(node('small', 'Downloaded from:'));
+  if (!u.downloadedFrom?.length) { chips.append(node('span', 'No messages yet', 'badge')); return chips; }
+  for (const source of u.downloadedFrom) {
+    const chip = node('span', `${sourceName(source)} · ${source.count}`, 'badge source');
+    chip.title = `${source.count} stored messages from ${sourceName(source)}`; chips.append(chip);
+  }
+  return chips;
+}
+function attachLookup(input, type) {
+  const field = input.closest('label') || input.parentElement; field.classList.add('lookup-field');
+  const results = node('div', '', 'member-results'); results.setAttribute('aria-live', 'polite'); field.append(results);
+  let timer, sequence = 0;
+  const clear = () => { clearTimeout(timer); sequence++; results.replaceChildren(); };
+  input.addEventListener('input', () => {
+    clear();
+    const query = input.value.trim(), current = sequence;
+    if (!query || /^\d{17,20}$/.test(query) || query.length > 64 || (type === 'user' && query.length < 2)) return;
+    timer = setTimeout(async () => {
+      try {
+        const data = await (await api(`/api/lookup?type=${type}&query=${encodeURIComponent(query)}`)).json();
+        if (current !== sequence) return;
+        results.replaceChildren(...data.results.map(item => {
+          const button = node('button', '', 'member-option'); button.type = 'button';
+          const id = item.user?.id ?? item.id;
+          if (item.user) button.append(avatar(item.user), node('span', `${person(item.user)} · ${item.user.username} · ${id}`));
+          else button.append(node('span', `${item.name}${item.guildName ? ` · ${item.guildName}` : ''} · ${id}`));
+          button.onclick = () => { clear(); input.value = id; input.dispatchEvent(new Event('input', { bubbles: true })); results.replaceChildren(); };
+          return button;
+        }));
+        if (!data.results.length) results.append(node('p', 'No matches the bot can see.', 'muted'));
+      } catch (error) { if (current === sequence) results.replaceChildren(node('p', error.message, 'muted')); }
+    }, 350);
+  });
 }
 function updateSelection(users) {
   const count = users.filter(u => selectedUsers.has(u.user.id)).length;
@@ -208,10 +246,13 @@ async function showUser(u) {
   const download = node('button', 'Re-download'); download.onclick = async () => { try { const guildId = $('users-guild').value, channelIds = selectedChannelIds($('users-channels')), rawLimit = $('download-limit').value; await request('/api/downloads', { userId: u.user.id, guildId, channelIds, limit: rawLimit ? Number(rawLimit) : null }); dialog.close(); nav('downloads'); await refresh(); toast('Download started'); } catch (error) { fail(error); } };
   const del = node('button', 'Delete user entirely', 'danger'); del.onclick = async () => { if (!confirm(`Permanently delete all saved data for ${person(u.user)} and cancel their downloads?`)) return; try { await api(`/api/users/${u.user.id}`, { method: 'DELETE' }); await refresh(); dialog.close(); toast('User deleted'); } catch (e) { fail(e); } };
   settings.append(actions, save);
+  const sources = node('section', '', 'drawer-section'); sources.append(node('h3', 'Downloaded from'));
+  if (u.downloadedFrom?.length) { const list = node('div', '', 'source-chips'); for (const source of u.downloadedFrom) list.append(node('span', `${sourceName(source)} · ${source.count} messages`, 'badge source')); sources.append(list); }
+  else sources.append(node('p', 'No stored messages yet.', 'muted'));
   const tools = node('section', '', 'drawer-section'); tools.append(node('h3', 'Stored messages'));
   const toolButtons = node('div', '', 'drawer-tools'); toolButtons.append(random, exportButton, download); tools.append(toolButtons);
   const danger = node('section', '', 'drawer-section drawer-danger'); danger.append(node('h3', 'Danger zone'), del);
-  body.append(summary, stats, settings, tools, danger);
+  body.append(summary, stats, sources, settings, tools, danger);
   $('drawer-title').textContent = person(u.user); $('drawer-title').title = person(u.user); dialog.showModal();
 }
 function renderOverview() {
@@ -413,4 +454,8 @@ function resolveInput(input, type) {
   }, 350);
 }
 $('backup').onclick = async () => { try { const blob=await (await api('/api/backup')).blob(), a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='bot-backup.sqlite'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),30000); } catch(e) { fail(e); } };
-$('addUser').onclick = async () => { const id=prompt('Discord user ID (17–20 digits)'); if (!id) return; if (!/^\d{17,20}$/.test(id)) { fail(Error('Enter a valid Discord ID.')); return; } try { await request(`/api/users/${id}`,{tracked:true}); await refresh(); nav('users'); showUser(state.users.find(u=>u.user.id===id) || { user: { id, username:id, displayName:id, avatarUrl:null }, tracked:true, nerded:false, replyChanceOverride:null, messageCount:0, mediaSkipped:0 }); } catch(e) { fail(e); } };
+for (const [name, type] of [['alwaysReplyUserId', 'user'], ['specialUserId', 'user'], ['specialRoleId', 'role'], ['guildId', 'guild']]) attachLookup($('config-form').elements[name], type);
+attachLookup($('add-user-id'), 'user');
+$('addUser').onclick = () => { $('add-user-id').value = ''; $('add-user-dialog').showModal(); };
+$('add-user-cancel').onclick = () => $('add-user-dialog').close();
+$('add-user-form').onsubmit = async e => { e.preventDefault(); const id = $('add-user-id').value.trim(); if (!/^\d{17,20}$/.test(id)) { fail(Error('Pick a user or enter a valid Discord ID.')); return; } $('add-user-dialog').close(); try { await request(`/api/users/${id}`,{tracked:true}); await refresh(); nav('users'); showUser(state.users.find(u=>u.user.id===id) || { user: { id, username:id, displayName:id, avatarUrl:null }, tracked:true, nerded:false, replyChanceOverride:null, messageCount:0, mediaSkipped:0 }); } catch(e) { fail(e); } };

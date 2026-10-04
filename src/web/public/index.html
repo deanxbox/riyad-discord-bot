@@ -56,11 +56,11 @@
         <label>Trivia options per question (2–10)<input name="triviaOptionCount" type="number" min="2" max="10" required></label>
         <label>Seconds before each reply (0–60)<input name="replyDelaySeconds" type="number" min="0" max="60" step="0.5" required></label>
         <label><input name="typingIndicator" type="checkbox"> Show typing indicator while waiting</label>
-        <label>Always-reply user ID<input name="alwaysReplyUserId" required pattern="[0-9]{17,20}"><small data-resolved="alwaysReplyUserId"></small></label>
+        <label>Always-reply user ID<input name="alwaysReplyUserId" required pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="alwaysReplyUserId"></small></label>
         <label>Nerd emoji<input name="nerdEmoji" maxlength="100" required></label>
-        <label>Special admin user ID<input name="specialUserId" required pattern="[0-9]{17,20}"><small data-resolved="specialUserId"></small></label>
-        <label>Special admin role ID<input name="specialRoleId" required pattern="[0-9]{17,20}"><small data-resolved="specialRoleId"></small></label>
-        <label>Guild ID<input name="guildId" pattern="[0-9]{17,20}"><small data-resolved="guildId"></small><small>Optional; blank disables the default guild.</small></label><button class="primary">Save configuration</button></form></article></section>
+        <label>Special admin user ID<input name="specialUserId" required pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="specialUserId"></small></label>
+        <label>Special admin role ID<input name="specialRoleId" required pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by role name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="specialRoleId"></small></label>
+        <label>Guild ID<input name="guildId" pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by server name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="guildId"></small><small>Optional; blank disables the default guild.</small></label><button class="primary">Save configuration</button></form></article></section>
       <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><ol id="scores" class="score-list"></ol></article></section>
       <section id="queue" class="tab">
         <article class="card"><h2>Queue a reply</h2><p class="muted">Used for the next qualifying auto-response, optionally reserved for one user.</p>
@@ -82,6 +82,12 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="add-user-dialog" aria-labelledby="add-user-title">
+    <form id="add-user-form"><h2 id="add-user-title">Add user</h2>
+      <label>User<input id="add-user-id" required pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by name or paste an ID" title="Pick a search result or paste a Discord ID"><small>Searches servers the bot can see. Pasting a Discord ID also works.</small></label>
+      <div class="row"><button id="add-user-cancel" type="button">Cancel</button><button class="primary">Add user</button></div>
+    </form>
+  </dialog>
   <dialog id="drawer" aria-labelledby="drawer-title">
     <div class="drawer-header"><div><p class="eyebrow">USER MANAGEMENT</p><h2 id="drawer-title">User details</h2></div><form method="dialog"><button class="close" aria-label="Close details">×</button></form></div>
     <div id="drawer-body"></div>

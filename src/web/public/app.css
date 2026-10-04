@@ -125,3 +125,11 @@ textarea:focus-visible { outline: 3px solid #aab3ff; outline-offset: 2px; }
 @media (max-width: 650px) { .download-scope { grid-template-columns: 1fr; } }
 @media (max-width: 540px) { #downloads .form-grid { grid-template-columns: 1fr; } .download-refresh > button { width: 100%; } }
 .st-starting,.st-queued{background:#343944;color:#c4c9d4}.st-running{background:#1f3a5c;color:#8cc4ff}.st-indexing,.st-rate_limited{background:#4d3d1a;color:#ffd27a}.st-cancel_requested,.st-cancelled{background:#4a3320;color:#ffb877}.st-completed{background:#1e4937;color:#8df0bb}.st-failed{background:#5a2530;color:#ff9eaa}
+
+.source-chips { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin-top: .35rem; white-space: normal; }
+.source-chips small { margin: 0; }
+.badge.source { background: #2b3258; color: #b9c1ff; }
+#users .user-main .source-chips { overflow: visible; }
+.lookup-field { position: relative; }
+#add-user-dialog { width: min(440px, calc(100% - 24px)); overflow: visible; }
+#add-user-dialog .row { justify-content: flex-end; margin-top: 1rem; }

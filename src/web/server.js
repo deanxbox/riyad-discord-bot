@@ -248,9 +248,13 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         const guildId = params.get('guildId') || config.guildId;
         const ids = new Set(store.listUserIds());
         if (isSnowflake(params.get('userId'))) ids.add(params.get('userId'));
+        const sources = store.getMessageSources();
         const users = await Promise.all([...ids].map(async id => {
           const { userId, ...summary } = store.getUserSummary(id);
-          return { ...summary, user: await resolveUser(id) };
+          const downloadedFrom = (sources.get(id) || [])
+            .map(({ guildId: sourceGuildId, count }) => ({ guildId: sourceGuildId, guildName: sourceGuildId ? client?.guilds?.cache?.get(sourceGuildId)?.name ?? null : null, count }))
+            .sort((a, b) => b.count - a.count);
+          return { ...summary, user: await resolveUser(id), downloadedFrom };
         }));
         const jobs = await Promise.all(downloadJobs.getActiveJobs().map(async j => ({
           id: j.id, guildId: j.guildId, target: await resolveUser(j.targetUserId), requestedBy: await resolveUser(j.requestedById),
@@ -297,6 +301,23 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           json(response, 200, { name: role?.name || id });
         } else json(response, 200, { user: await resolveUser(id) });
         return;
+      }
+      if (pathname === '/api/lookup' && request.method === 'GET') {
+        const type = params.get('type'), query = params.get('query')?.trim();
+        if (!['user', 'role', 'guild'].includes(type) || !query || query.length > 64 || (type === 'user' && !isSnowflake(query) && query.length < 2)) throw new RangeError('Invalid lookup.');
+        const guilds = [...(client?.guilds?.cache?.values?.() || [])], needle = query.toLowerCase();
+        let results;
+        if (type === 'guild') results = guilds.filter(g => g.id === query || g.name.toLowerCase().includes(needle)).map(g => ({ id: g.id, name: g.name }));
+        else if (type === 'role') results = guilds.flatMap(g => [...g.roles.cache.values()].filter(r => r.id === query || r.name.toLowerCase().includes(needle)).map(r => ({ id: r.id, name: r.name, guildName: g.name })));
+        else if (isSnowflake(query)) results = [{ user: await resolveUser(query) }];
+        else {
+          const found = new Map();
+          for (const members of await Promise.all(guilds.map(g => g.members.search({ query, limit: 10 }).catch(() => new Map())))) {
+            for (const member of members.values()) if (!found.has(member.id)) found.set(member.id, { user: userObject(member.id, member.user, member) });
+          }
+          results = [...found.values()];
+        }
+        json(response, 200, { results: results.slice(0, 10) }); return;
       }
       if (pathname === '/api/members' && request.method === 'GET') {
         const guildId = params.get('guildId'), query = params.get('query')?.trim();
