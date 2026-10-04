@@ -3,7 +3,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 
-const TRIVIA_LIFETIME_MS = 10 * 60 * 1000;
+const TRIVIA_LIFETIME_MS = 60 * 1000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -21,6 +21,7 @@ export class DataStore extends EventEmitter {
     nerdEmoji = '🤓',
   } = {}) {
     super();
+    this.on('change', change => { if (change?.type === 'user') this.messageSourcesCache = null; });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     this.db = new DatabaseSync(dbPath);
@@ -76,6 +77,12 @@ export class DataStore extends EventEmitter {
 
       CREATE INDEX IF NOT EXISTS idx_user_messages_user_guild
       ON user_messages (user_id, guild_id);
+
+      CREATE INDEX IF NOT EXISTS idx_user_messages_unassigned_channel
+      ON user_messages (channel_id) WHERE guild_id IS NULL AND channel_id IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_user_messages_unassigned_user
+      ON user_messages (user_id) WHERE guild_id IS NULL;
 
       CREATE TABLE IF NOT EXISTS download_staging_messages (
         job_id TEXT NOT NULL,
@@ -280,19 +287,21 @@ export class DataStore extends EventEmitter {
       FROM download_staging_messages WHERE job_id = ?
     `);
 
-    this.randomMessageStmt = this.db.prepare(`
-      SELECT content
+    // ORDER BY RANDOM() sorts every row for the user (hundreds of thousands) and blocks the event loop.
+    // Seek to a random rowid inside the user's index range instead.
+    this.userRowidRangeStmt = this.db.prepare('SELECT MIN(rowid) AS lo, MAX(rowid) AS hi FROM user_messages WHERE user_id = ?');
+    this.randomFromRowidStmt = this.db.prepare(`
+      SELECT content, created_at, channel_id
       FROM user_messages
-      WHERE user_id = ? AND LENGTH(TRIM(content)) > 0
-      ORDER BY RANDOM()
+      WHERE user_id = ? AND rowid >= ? AND LENGTH(TRIM(content)) > 0
+      ORDER BY rowid
       LIMIT 1
     `);
-
-    this.randomMessageWithMetadataStmt = this.db.prepare(`
+    this.randomFirstStmt = this.db.prepare(`
       SELECT content, created_at, channel_id
       FROM user_messages
       WHERE user_id = ? AND LENGTH(TRIM(content)) > 0
-      ORDER BY RANDOM()
+      ORDER BY rowid
       LIMIT 1
     `);
 
@@ -590,17 +599,33 @@ export class DataStore extends EventEmitter {
   }
 
   getMessageSources() {
+    // Full-table GROUP BY blocks the event loop for seconds on large archives, so cache briefly.
+    if (this.messageSourcesCache && Date.now() - this.messageSourcesCache.at < 30000) return this.messageSourcesCache.value;
     this.messageSourcesStmt ??= this.db.prepare(`
-      SELECT user_id, guild_id, message_id LIKE 'legacy-%' AS legacy, COUNT(*) AS count
+      SELECT user_id, guild_id, COUNT(*) AS count
       FROM user_messages
-      GROUP BY user_id, guild_id, legacy
+      GROUP BY user_id, guild_id
+    `);
+    // Rows with no server are few; only they need the legacy/non-legacy split (a full-table LIKE scan is slow).
+    this.legacySplitStmt ??= this.db.prepare(`
+      SELECT user_id, message_id LIKE 'legacy-%' AS legacy, COUNT(*) AS count
+      FROM user_messages
+      WHERE guild_id IS NULL
+      GROUP BY user_id, legacy
     `);
     const sources = new Map();
     for (const row of this.messageSourcesStmt.all()) {
+      if (row.guild_id === null) continue;
       const list = sources.get(String(row.user_id)) ?? [];
-      list.push({ guildId: row.guild_id ? String(row.guild_id) : null, legacy: Boolean(row.legacy), count: Number(row.count) || 0 });
+      list.push({ guildId: String(row.guild_id), legacy: false, count: Number(row.count) || 0 });
       sources.set(String(row.user_id), list);
     }
+    for (const row of this.legacySplitStmt.all()) {
+      const list = sources.get(String(row.user_id)) ?? [];
+      list.push({ guildId: null, legacy: Boolean(row.legacy), count: Number(row.count) || 0 });
+      sources.set(String(row.user_id), list);
+    }
+    this.messageSourcesCache = { at: Date.now(), value: sources };
     return sources;
   }
 
@@ -610,6 +635,7 @@ export class DataStore extends EventEmitter {
   }
 
   assignGuildToChannel(channelId, guildId) {
+    this.messageSourcesCache = null;
     return this.db.prepare('UPDATE user_messages SET guild_id = ? WHERE guild_id IS NULL AND channel_id = ?').run(String(guildId), String(channelId)).changes;
   }
 
@@ -942,11 +968,19 @@ export class DataStore extends EventEmitter {
   }
 
   getRandomMessage(userId) {
-    return this.randomMessageStmt.get(String(userId))?.content ?? null;
+    return this.pickRandomMessage(userId)?.content ?? null;
   }
 
   getRandomMessageWithMetadata(userId) {
-    return this.randomMessageWithMetadataStmt.get(String(userId)) ?? null;
+    return this.pickRandomMessage(userId);
+  }
+
+  pickRandomMessage(userId) {
+    const id = String(userId);
+    const { lo, hi } = this.userRowidRangeStmt.get(id) ?? {};
+    if (lo == null) return null;
+    const start = lo + Math.floor(Math.random() * (hi - lo + 1));
+    return this.randomFromRowidStmt.get(id, start) ?? this.randomFirstStmt.get(id) ?? null;
   }
 
   exportUserMessages(userId) {
