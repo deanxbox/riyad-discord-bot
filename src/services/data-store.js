@@ -22,7 +22,7 @@ export class DataStore extends EventEmitter {
     triviaTimeoutSeconds = 60,
   } = {}) {
     super();
-    this.triviaLifetimeMs = Number.isFinite(triviaTimeoutSeconds) && triviaTimeoutSeconds > 0 ? triviaTimeoutSeconds * 1000 : DEFAULT_TRIVIA_LIFETIME_MS;
+    this.defaultTriviaTimeoutSeconds = Number.isFinite(triviaTimeoutSeconds) && triviaTimeoutSeconds >= 5 && triviaTimeoutSeconds <= 3600 ? triviaTimeoutSeconds : DEFAULT_TRIVIA_LIFETIME_MS / 1000;
     this.on('change', change => { if (change?.type === 'user') this.messageSourcesCache = null; });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
@@ -467,6 +467,21 @@ export class DataStore extends EventEmitter {
   getDownloadConcurrency() {
     const value = Number(this.getMetadata('download_concurrency') ?? 3);
     return Number.isInteger(value) && value >= 1 && value <= 10 ? value : 3;
+  }
+
+  getTriviaTimeoutSeconds() {
+    const value = Number(this.getMetadata('trivia_timeout_seconds') ?? this.defaultTriviaTimeoutSeconds);
+    return Number.isInteger(value) && value >= 5 && value <= 3600 ? value : this.defaultTriviaTimeoutSeconds;
+  }
+
+  get triviaLifetimeMs() {
+    return this.getTriviaTimeoutSeconds() * 1000;
+  }
+
+  setTriviaTimeoutSeconds(value) {
+    if (!Number.isInteger(value) || value < 5 || value > 3600) throw new RangeError('Trivia timeout must be 5 to 3600 seconds.');
+    this.setMetadata('trivia_timeout_seconds', String(value));
+    return value;
   }
 
   getTriviaOptionCount() {
