@@ -62,11 +62,27 @@ export const triviaCommand = {
 
     store.setActiveTriviaQuestion(guild.id, { correctUserId, messageContent, optionUserIds });
 
-    await interaction.editReply({
+    const posted = await interaction.editReply({
       content: mediaLinks(messageContent) || undefined,
       embeds: [buildTriviaEmbed(messageContent)],
       components: buildTriviaComponents(optionUserIds, members),
     });
+
+    // ponytail: in-memory timer, lost on restart (message then stays unexpired); persist deadlines if that matters
+    const createdAt = store.getActiveTriviaQuestion(guild.id)?.created_at;
+    setTimeout(async () => {
+      try {
+        if (store.getActiveTriviaQuestion(guild.id)?.created_at !== createdAt) return; // solved or replaced
+        store.clearActiveTriviaQuestion(guild.id);
+        const correctMember = members.get(correctUserId);
+        await posted.edit({
+          embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>` })],
+          components: buildTriviaComponents(optionUserIds, members, { disabled: true, correctUserId }),
+        });
+      } catch (error) {
+        console.error('Failed to expire trivia message:', error);
+      }
+    }, store.triviaLifetimeMs + 500).unref();
   },
 };
 
@@ -126,9 +142,23 @@ const IMAGE_URL = /https?:\/\/\S+?\.(?:gif|png|jpe?g|webp)(?:\?\S*)?(?=\s|$)/i;
 // Other links (tenor, giphy, video) can't go in an embed image; post them as content so Discord unfurls them.
 const mediaLinks = text => (text.match(/https?:\/\/\S+/g) ?? []).filter(u => !IMAGE_URL.test(u)).join('\n');
 
-function buildTriviaEmbed(messageContent, { solved = false, winnerName, correctName } = {}) {
+function buildTriviaEmbed(messageContent, { solved = false, expired = false, winnerName, correctName } = {}) {
   const image = messageContent.match(IMAGE_URL)?.[0];
   const display = messageContent.length > 900 ? `${messageContent.slice(0, 900)}…` : messageContent;
+
+  if (expired) {
+    return new EmbedBuilder()
+      .setTitle('🎭 Trivia — Expired!')
+      .setDescription(`**Who said this?**
+
+>>> ${display}
+
+⏰ Time's up! Nobody got it in time.
+The answer was **${correctName}**.`)
+      .setColor(0xED4245)
+      .setImage(image ?? null)
+      .setTimestamp();
+  }
 
   if (solved) {
     return new EmbedBuilder()
