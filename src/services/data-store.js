@@ -287,22 +287,15 @@ export class DataStore extends EventEmitter {
       FROM download_staging_messages WHERE job_id = ?
     `);
 
-    // ORDER BY RANDOM() sorts every row for the user (hundreds of thousands) and blocks the event loop.
-    // Seek to a random rowid inside the user's index range instead.
-    this.userRowidRangeStmt = this.db.prepare('SELECT MIN(rowid) AS lo, MAX(rowid) AS hi FROM user_messages WHERE user_id = ?');
-    this.randomFromRowidStmt = this.db.prepare(`
+    // ORDER BY RANDOM() sorts every row for the user and blocks the event loop. A random rowid is
+    // biased (it favours rows after gaps), so pick a uniform OFFSET into the user's index instead.
+    this.userMessageCountStmt = this.db.prepare('SELECT COUNT(*) AS count FROM user_messages WHERE user_id = ?');
+    this.messageAtOffsetStmt = this.db.prepare(`
       SELECT content, created_at, channel_id
       FROM user_messages
-      WHERE user_id = ? AND rowid >= ? AND LENGTH(TRIM(content)) > 0
+      WHERE user_id = ?
       ORDER BY rowid
-      LIMIT 1
-    `);
-    this.randomFirstStmt = this.db.prepare(`
-      SELECT content, created_at, channel_id
-      FROM user_messages
-      WHERE user_id = ? AND LENGTH(TRIM(content)) > 0
-      ORDER BY rowid
-      LIMIT 1
+      LIMIT 1 OFFSET ?
     `);
 
     this.exportUserMessagesStmt = this.db.prepare(`
@@ -977,10 +970,15 @@ export class DataStore extends EventEmitter {
 
   pickRandomMessage(userId) {
     const id = String(userId);
-    const { lo, hi } = this.userRowidRangeStmt.get(id) ?? {};
-    if (lo == null) return null;
-    const start = lo + Math.floor(Math.random() * (hi - lo + 1));
-    return this.randomFromRowidStmt.get(id, start) ?? this.randomFirstStmt.get(id) ?? null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // The cached count is exact in normal operation; fall back to a real count if it has drifted.
+      let count = attempt === 0 ? this.getMessageCount(id) : 0;
+      if (!count) count = Number(this.userMessageCountStmt.get(id)?.count) || 0;
+      if (!count) return null;
+      const row = this.messageAtOffsetStmt.get(id, Math.floor(Math.random() * count));
+      if (row?.content?.trim()) return row;
+    }
+    return null;
   }
 
   exportUserMessages(userId) {
