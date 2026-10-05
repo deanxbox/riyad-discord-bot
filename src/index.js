@@ -14,6 +14,7 @@ const store = new DataStore(config.dbPath, {
   defaultReplyChancePercent: config.defaultReplyChancePercent,
   alwaysReplyUserId: config.alwaysReplyUserId,
   nerdEmoji: config.nerdEmoji,
+  triviaTimeoutSeconds: config.triviaTimeoutSeconds,
 });
 config.alwaysReplyUserId = store.getAlwaysReplyUserId();
 config.nerdEmoji = store.getNerdEmoji();

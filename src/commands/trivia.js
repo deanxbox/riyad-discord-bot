@@ -18,7 +18,7 @@ export const triviaCommand = {
     }
 
     const activeQuestion = store.getActiveTriviaQuestion(guild.id);
-    if (activeQuestion && isTriviaExpired(activeQuestion)) {
+    if (activeQuestion && isTriviaExpired(activeQuestion, Date.now(), store.triviaLifetimeMs)) {
       store.clearActiveTriviaQuestion(guild.id);
     } else if (activeQuestion) {
       await interaction.reply({

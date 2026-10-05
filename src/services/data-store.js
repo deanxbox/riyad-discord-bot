@@ -3,14 +3,14 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 
-const TRIVIA_LIFETIME_MS = 60 * 1000;
+const DEFAULT_TRIVIA_LIFETIME_MS = 60 * 1000;
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-export function isTriviaExpired(question, now = Date.now()) {
-  return now - Date.parse(question.created_at) > TRIVIA_LIFETIME_MS;
+export function isTriviaExpired(question, now = Date.now(), lifetimeMs = DEFAULT_TRIVIA_LIFETIME_MS) {
+  return now - Date.parse(question.created_at) > lifetimeMs;
 }
 
 export class DataStore extends EventEmitter {
@@ -19,8 +19,10 @@ export class DataStore extends EventEmitter {
     reactionChanceDenominator = 6,
     alwaysReplyUserId = '256876746861707264',
     nerdEmoji = '🤓',
+    triviaTimeoutSeconds = 60,
   } = {}) {
     super();
+    this.triviaLifetimeMs = Number.isFinite(triviaTimeoutSeconds) && triviaTimeoutSeconds > 0 ? triviaTimeoutSeconds * 1000 : DEFAULT_TRIVIA_LIFETIME_MS;
     this.on('change', change => { if (change?.type === 'user') this.messageSourcesCache = null; });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
@@ -1014,7 +1016,7 @@ export class DataStore extends EventEmitter {
     const result = this.transaction(() => {
       const question = this.selectTriviaActiveStmt.get(normalizedGuildId);
       if (!question) return { status: 'no_question' };
-      if (isTriviaExpired(question)) {
+      if (isTriviaExpired(question, Date.now(), this.triviaLifetimeMs)) {
         this.deleteTriviaActiveStmt.run(normalizedGuildId);
         return { status: 'no_question', expired: true };
       }

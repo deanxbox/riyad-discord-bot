@@ -28,6 +28,7 @@ export const config = {
   alwaysReplyUserId: process.env.ALWAYS_REPLY_USER_ID?.trim() || '256876746861707264',
   nerdEmoji: process.env.NERD_EMOJI?.trim() || '\u{1F913}',
   defaultReplyChancePercent: Number(process.env.DEFAULT_REPLY_CHANCE_PERCENT?.trim() || 4),
+  triviaTimeoutSeconds: Number(process.env.TRIVIA_TIMEOUT_SECONDS?.trim() || 60),
   webDashboardEnabled: process.env.WEB_DASHBOARD_ENABLED === 'true',
   webDashboardHost: process.env.WEB_DASHBOARD_HOST?.trim() || '127.0.0.1',
   webDashboardPort: Number(process.env.WEB_DASHBOARD_PORT?.trim() || 8787),

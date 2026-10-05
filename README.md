@@ -69,7 +69,7 @@ If `node -v` on the server is below 22, upgrade Node first before running `npm i
 - `/say <message> [message_id]` makes the bot send or reply with a message.
 - `/nerd-list` lists nerded users.
 - `/downloaded-list` lists tracked users.
-- `/trivia` starts a one-minute trivia round; `/scoreboard` lists winners.
+- `/trivia` starts a trivia round (60 seconds by default; set `TRIVIA_TIMEOUT_SECONDS` in `.env`); `/scoreboard` lists winners.
 
 ## Optional web dashboard
 
