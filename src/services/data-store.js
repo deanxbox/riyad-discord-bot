@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 
 const DEFAULT_TRIVIA_LIFETIME_MS = 60 * 1000;
+export const TRIVIA_MIN_RATIO_GUESSES = 10;
 
 function nowIso() {
   return new Date().toISOString();
@@ -136,6 +137,9 @@ export class DataStore extends EventEmitter {
 
   runMigrations() {
     this.addColumnIfMissing('trivia_active', 'guesses', "TEXT NOT NULL DEFAULT '[]'");
+    for (const column of ['wins', 'losses', 'first_guesses', 'streak', 'best_win_streak', 'best_loss_streak']) {
+      this.addColumnIfMissing('trivia_scores', column, 'INTEGER NOT NULL DEFAULT 0'); // streak: +n win run, -n loss run
+    }
     this.addColumnIfMissing('user_settings', 'reply_chance_override', 'INTEGER');
     this.addColumnIfMissing('user_settings', 'media_skipped', 'INTEGER NOT NULL DEFAULT 0');
     this.backfillMessageGuilds();
@@ -346,11 +350,28 @@ export class DataStore extends EventEmitter {
     `);
 
     this.selectTriviaLeaderboardStmt = this.db.prepare(`
-      SELECT user_id, score
+      SELECT user_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak
       FROM trivia_scores
       WHERE guild_id = ?
       ORDER BY score DESC, user_id ASC
       LIMIT ?
+    `);
+
+    this.selectTriviaRatioLeaderboardStmt = this.db.prepare(`
+      SELECT user_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak
+      FROM trivia_scores
+      WHERE guild_id = ? AND wins + losses >= ?
+      ORDER BY CAST(wins AS REAL) / MAX(losses, 1) DESC, wins DESC, user_id ASC
+      LIMIT ?
+    `);
+
+    this.selectTriviaStatStmt = this.db.prepare('SELECT streak, best_win_streak, best_loss_streak FROM trivia_scores WHERE user_id = ? AND guild_id = ?');
+    this.upsertTriviaStatStmt = this.db.prepare(`
+      INSERT INTO trivia_scores (user_id, guild_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak)
+      VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, guild_id) DO UPDATE SET
+        wins = wins + excluded.wins, losses = losses + excluded.losses, first_guesses = first_guesses + excluded.first_guesses,
+        streak = excluded.streak, best_win_streak = excluded.best_win_streak, best_loss_streak = excluded.best_loss_streak
     `);
   }
 
@@ -1053,12 +1074,15 @@ export class DataStore extends EventEmitter {
       const answeredIds = JSON.parse(question.answered_user_ids);
       if (answeredIds.includes(normalizedUserId)) return { status: 'already_answered' };
 
+      const first = answeredIds.length === 0;
       answeredIds.push(normalizedUserId);
       const guesses = JSON.parse(question.guesses ?? '[]');
-      guesses.push({ userId: normalizedUserId, guessId: selectedUserId, at: Date.now() });
+      const entry = { userId: normalizedUserId, guessId: selectedUserId, at: Date.now() };
+      if (selectedUserId != null) entry.streak = this.recordTriviaResult(normalizedGuildId, normalizedUserId, selectedUserId === question.correct_user_id, first);
+      guesses.push(entry);
       this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), JSON.stringify(guesses), normalizedGuildId);
 
-      return { status: 'ok', question };
+      return { status: 'ok', question, streak: entry.streak ?? 0 };
     });
     if (result.expired || result.status === 'ok') this.emit('change', { type: 'trivia', guildId: normalizedGuildId });
     if (result.expired) return { status: 'no_question' };
@@ -1070,8 +1094,26 @@ export class DataStore extends EventEmitter {
     this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
 
-  triviaGetLeaderboard(guildId, limit = 10) {
-    return this.selectTriviaLeaderboardStmt.all(String(guildId), limit);
+  // Updates W/L, first-answer count and streaks; returns the new signed streak.
+  recordTriviaResult(guildId, userId, correct, first) {
+    const row = this.selectTriviaStatStmt.get(userId, guildId) ?? { streak: 0, best_win_streak: 0, best_loss_streak: 0 };
+    const streak = correct ? Math.max(row.streak, 0) + 1 : Math.min(row.streak, 0) - 1;
+    this.upsertTriviaStatStmt.run(userId, guildId, correct ? 1 : 0, correct ? 0 : 1, first ? 1 : 0, streak,
+      Math.max(row.best_win_streak, streak), Math.max(row.best_loss_streak, -streak));
+    return streak;
+  }
+
+  // sort: 'points' | 'ratio' (wins / max(losses, 1), only players with enough guesses)
+  triviaGetLeaderboard(guildId, limit = 10, sort = 'points') {
+    const rows = sort === 'ratio'
+      ? this.selectTriviaRatioLeaderboardStmt.all(String(guildId), TRIVIA_MIN_RATIO_GUESSES, limit)
+      : this.selectTriviaLeaderboardStmt.all(String(guildId), limit);
+    return rows.map(r => ({ ...r, ratio: r.wins + r.losses >= TRIVIA_MIN_RATIO_GUESSES ? r.wins / Math.max(r.losses, 1) : null }));
+  }
+
+  triviaGetRecords(guildId) {
+    const top = column => this.db.prepare(`SELECT user_id, ${column} AS value FROM trivia_scores WHERE guild_id = ? AND ${column} > 0 ORDER BY ${column} DESC, user_id ASC LIMIT 1`).get(String(guildId));
+    return Object.fromEntries(Object.entries({ winStreak: top('best_win_streak'), lossStreak: top('best_loss_streak'), firstGuesses: top('first_guesses') }).filter(([, v]) => v));
   }
 }
 

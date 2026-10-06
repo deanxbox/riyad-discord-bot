@@ -5,9 +5,10 @@ import { getGuildMembers } from '../services/guild-members.js';
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
 const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
+const streakNote = streak => (streak <= -3 ? ` 🧊 **${-streak} loss streak**` : '');
 const guessLines = (guesses, members, correctId, createdAt, live = false) => guesses
   .filter(g => g.guessId !== correctId)
-  .map(g => `• **${nameOf(members, g.userId)}** ${live ? 'has guessed incorrectly!' : `guessed ${nameOf(members, g.guessId)}`}${g.at ? ` (${((g.at - Date.parse(createdAt)) / 1000).toFixed(2)}s)` : ''}`).join('\n');
+  .map(g => `• **${nameOf(members, g.userId)}** ${live ? 'has guessed incorrectly!' : `guessed ${nameOf(members, g.guessId)}`}${g.at ? ` (${((g.at - Date.parse(createdAt)) / 1000).toFixed(2)}s)` : ''}${streakNote(g.streak ?? 0)}`).join('\n');
 const guessBlock = (lines, final = true) => (lines ? `\n\n❌ **${final ? 'Wrong guesses' : 'Incorrect so far'}:**\n${lines.slice(0, 800)}` : '');
 
 export const triviaCommand = {
@@ -135,6 +136,7 @@ export async function handleTriviaButton(interaction, { store }) {
       elapsedMs,
       bonus,
       bonusSeconds,
+      streak: attempt.streak,
       guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), guild.members.cache, question.correct_user_id, question.created_at),
     });
 
@@ -161,7 +163,7 @@ const IMAGE_URL = /https?:\/\/\S+?\.(?:gif|png|jpe?g|webp)(?:\?\S*)?(?=\s|$)/i;
 // Other links (tenor, giphy, video) can't go in an embed image; post them as content so Discord unfurls them.
 const mediaLinks = text => (text.match(/https?:\/\/\S+/g) ?? []).filter(u => !IMAGE_URL.test(u)).join('\n');
 
-function buildTriviaEmbed(messageContent, { solved = false, expired = false, winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, guessLines: lines = '' } = {}) {
+function buildTriviaEmbed(messageContent, { solved = false, expired = false, winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, streak = 0, guessLines: lines = '' } = {}) {
   const image = messageContent.match(IMAGE_URL)?.[0];
   const display = messageContent.length > 900 ? `${messageContent.slice(0, 900)}…` : messageContent;
 
@@ -186,6 +188,7 @@ The answer was **${correctName}**.${guessBlock(lines)}`)
         `**Who said this?**\n\n>>> ${display}\n\n` +
         `✅ **${winnerName}** got it right in **${(elapsedMs / 1000).toFixed(2)}s**!\n` +
         (bonus ? `⚡ **x2 speed bonus!** Answered within ${bonusSeconds}s for 2 points.\n` : '') +
+        (streak >= 3 ? `🔥 **${winnerName}** is on a **${streak} win streak**!\n` : '') +
         `The answer was **${correctName}**.${guessBlock(lines)}`,
       )
       .setColor(0x57F287)

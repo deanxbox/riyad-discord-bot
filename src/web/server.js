@@ -271,9 +271,11 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           createdBy: isSnowflake(createdByUserId) ? await resolveUser(createdByUserId)
             : userObject(createdByUserId, { username: createdByUserId === 'dashboard' ? 'Dashboard' : createdByUserId }),
         })));
-        const leaderboard = guildId && isSnowflake(guildId) ? await Promise.all(store.triviaGetLeaderboard(guildId).map(async ({ user_id, ...row }) => ({ ...row, user: await resolveUser(user_id) }))) : [];
+        const sort = params.get('sort') === 'ratio' ? 'ratio' : 'points';
+        const leaderboard = guildId && isSnowflake(guildId) ? await Promise.all(store.triviaGetLeaderboard(guildId, 10, sort).map(async ({ user_id, ...row }) => ({ ...row, user: await resolveUser(user_id) }))) : [];
+        const triviaRecords = guildId && isSnowflake(guildId) ? Object.fromEntries(await Promise.all(Object.entries(store.triviaGetRecords(guildId)).map(async ([key, { user_id, value }]) => [key, { value, user: await resolveUser(user_id) }]))) : {};
         json(response, 200, {
-          users, jobs, queue, leaderboard,
+          users, jobs, queue, leaderboard, triviaRecords,
           replyChancePercent: store.getReplyChancePercent(), reactionChanceDenominator: store.getReactionChanceDenominator(),
           downloadConcurrency: store.getDownloadConcurrency(),
           triviaOptionCount: store.getTriviaOptionCount(), triviaTimeoutSeconds: store.getTriviaTimeoutSeconds(), triviaBonusSeconds: store.getTriviaBonusSeconds(), replyDelaySeconds: store.getReplyDelaySeconds(), typingIndicator: store.getTypingIndicator(),

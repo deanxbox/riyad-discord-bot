@@ -301,16 +301,18 @@ function render(stateData) {
       names.append(node('strong', person(s.user)));
       if (s.user?.username && s.user.username !== person(s.user)) names.append(node('small', `@${s.user.username}`));
       identity.append(avatar(s.user), names);
-      item.append(node('span', `#${i + 1}`, 'score-rank'), identity, node('span', `${s.score} ${s.score === 1 ? 'point' : 'points'}`, 'score-points'));
+      item.append(node('span', `#${i + 1}`, 'score-rank'), identity, node('span', `${s.score} ${s.score === 1 ? 'point' : 'points'} · ${s.wins}W/${s.losses}L${s.ratio == null ? '' : ` (${s.ratio.toFixed(2)})`}${s.streak >= 3 ? ` · 🔥 ${s.streak} win streak` : s.streak <= -3 ? ` · 🧊 ${-s.streak} loss streak` : ''}`, 'score-points'));
       return item;
     }));
+    const rec = state.triviaRecords || {}, name = r => person(r.user);
+    $('trivia-records').textContent = [rec.winStreak && `🔥 Best win streak: ${rec.winStreak.value} (${name(rec.winStreak)})`, rec.lossStreak && `🧊 Worst loss streak: ${rec.lossStreak.value} (${name(rec.lossStreak)})`, rec.firstGuesses && `⚡ Fastest most often: ${name(rec.firstGuesses)} (${rec.firstGuesses.value}x)`].filter(Boolean).join('  ·  ');
     if (!state.leaderboard.length) $('scores').append(node('li', 'No trivia scores for this server yet.', 'empty-state'));
   }
 }
 async function refresh() {
   const guildId = selected === 'trivia' ? $('trivia-guild').value : $('download-guild').value;
   const userId = $('download-user').value;
-  const data = await (await api(`/api/state?guildId=${encodeURIComponent(guildId || '')}&userId=${encodeURIComponent(userId)}`)).json();
+  const data = await (await api(`/api/state?guildId=${encodeURIComponent(guildId || '')}&userId=${encodeURIComponent(userId)}&sort=${$('trivia-sort').value}`)).json();
   const x = window.scrollX, y = window.scrollY;
   render(data);
   window.scrollTo(x, y);
@@ -440,6 +442,7 @@ $('download-guild').addEventListener('change', () => void loadChannels($('downlo
 $('users-guild').addEventListener('change', () => void loadChannels($('users-guild'), $('users-channels')).catch(fail));
 $('refresh-all').onclick = async () => { if (!confirm('Refresh every tracked user in this server, sequentially?')) return; try { await request('/api/refresh-all', { guildId: $('download-guild').value, channelIds: selectedChannelIds($('download-channels')), limit: $('download-limit').value ? Number($('download-limit').value) : null }); toast('Refresh queued'); await refresh(); nav('downloads'); } catch (e) { fail(e); } };
 $('trivia-guild').addEventListener('change', () => refresh().catch(fail));
+$('trivia-sort').addEventListener('change', () => refresh().catch(fail));
 $('config-form').addEventListener('input', e => { if (e.target.form === $('config-form')) $('config-form').dataset.editing = 'true'; });
 $('config-form').onsubmit = async e => { e.preventDefault(); const form=e.currentTarget; try { for (const key of ['specialUserId','specialRoleId']) if (form.elements[key].value !== (key === 'specialUserId' ? state.specialUser.id : state.specialRoleId) && !confirm(`Change ${key}? This can lock you out of admin controls. Continue?`)) return; for (const key of ['replyChancePercent','reactionChanceDenominator','downloadConcurrency','triviaOptionCount','triviaTimeoutSeconds','triviaBonusSeconds','replyDelaySeconds','typingIndicator','alwaysReplyUserId','nerdEmoji','specialUserId','specialRoleId','guildId']) { const raw=form.elements[key].value; if (key==='typingIndicator') { await request('/api/settings',{typingIndicator:form.elements[key].checked}); continue; } await request('/api/settings',{[key]:['replyChancePercent','reactionChanceDenominator','downloadConcurrency','triviaOptionCount','triviaTimeoutSeconds','triviaBonusSeconds','replyDelaySeconds'].includes(key)?Number(raw):key==='guildId'&&!raw?null:raw}); } form.dataset.editing = ''; await refresh(); toast('Configuration saved'); } catch (error) { fail(error); } };
 $('config-form').elements.alwaysReplyUserId.addEventListener('input', e => resolveInput(e.target, 'user'));

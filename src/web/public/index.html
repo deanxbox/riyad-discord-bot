@@ -63,7 +63,7 @@
         <label>Special admin user ID<input name="specialUserId" required pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="specialUserId"></small></label>
         <label>Special admin role ID<input name="specialRoleId" required pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by role name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="specialRoleId"></small></label>
         <label>Guild ID<input name="guildId" pattern="[0-9]{17,20}" autocomplete="off" placeholder="Search by server name or paste an ID" title="Pick a search result or paste a Discord ID"><small data-resolved="guildId"></small><small>Optional; blank disables the default guild.</small></label><button class="primary">Save configuration</button></form></article></section>
-      <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><ol id="scores" class="score-list"></ol></article></section>
+      <section id="trivia" class="tab"><article class="card"><h2>Trivia leaderboard</h2><label>Server<select id="trivia-guild"></select></label><label>Sort by<select id="trivia-sort"><option value="points">Points</option><option value="ratio">W/L ratio (10+ guesses)</option></select></label><p id="trivia-records" class="empty-state"></p><ol id="scores" class="score-list"></ol></article></section>
       <section id="queue" class="tab">
         <article class="card"><h2>Queue a reply</h2><p class="muted">Used for the next qualifying auto-response, optionally reserved for one user.</p>
           <form id="queue-form" class="form-grid">
