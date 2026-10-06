@@ -1059,15 +1059,17 @@ export class DataStore extends EventEmitter {
 
   // Atomically registers a user's answer attempt.
   // Returns { status: 'no_question' | 'already_answered' | 'ok', question? }
-  triviaAttempt(guildId, userId, selectedUserId = null) {
+  // The active question is keyed by channel (channelId defaults to the guild ID); stats stay per guild.
+  triviaAttempt(guildId, userId, selectedUserId = null, channelId = guildId) {
     const normalizedGuildId = String(guildId);
+    const normalizedChannelId = String(channelId);
     const normalizedUserId = String(userId);
 
     const result = this.transaction(() => {
-      const question = this.selectTriviaActiveStmt.get(normalizedGuildId);
+      const question = this.selectTriviaActiveStmt.get(normalizedChannelId);
       if (!question) return { status: 'no_question' };
       if (isTriviaExpired(question, Date.now(), this.triviaLifetimeMs)) {
-        this.deleteTriviaActiveStmt.run(normalizedGuildId);
+        this.deleteTriviaActiveStmt.run(normalizedChannelId);
         return { status: 'no_question', expired: true };
       }
 
@@ -1080,7 +1082,7 @@ export class DataStore extends EventEmitter {
       const entry = { userId: normalizedUserId, guessId: selectedUserId, at: Date.now() };
       if (selectedUserId != null) entry.streak = this.recordTriviaResult(normalizedGuildId, normalizedUserId, selectedUserId === question.correct_user_id, first);
       guesses.push(entry);
-      this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), JSON.stringify(guesses), normalizedGuildId);
+      this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), JSON.stringify(guesses), normalizedChannelId);
 
       return { status: 'ok', question, streak: entry.streak ?? 0 };
     });

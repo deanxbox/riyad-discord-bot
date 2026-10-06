@@ -11,39 +11,70 @@ const guessLines = (guesses, members, correctId, createdAt, live = false) => gue
   .map(g => `• **${nameOf(members, g.userId)}** ${live ? 'has guessed incorrectly!' : `guessed ${nameOf(members, g.guessId)}`}${g.at ? ` (${((g.at - Date.parse(createdAt)) / 1000).toFixed(2)}s)` : ''}${streakNote(g.streak ?? 0)}`).join('\n');
 const guessBlock = (lines, final = true) => (lines ? `\n\n❌ **${final ? 'Wrong guesses' : 'Incorrect so far'}:**\n${lines.slice(0, 800)}` : '');
 
+const starting = new Set();
+const ALREADY_ACTIVE = 'There\'s already an active trivia question in this channel! Answer it or wait for it to expire first.';
+
+// Guild members where available, otherwise the user's global profile (they may have left the server).
+async function resolvePeople(client, guildMembers, ids) {
+  const people = new Map();
+  await Promise.all(ids.map(async id => {
+    const member = guildMembers.get(id);
+    if (member) return people.set(id, member);
+    const user = client?.users?.cache?.get(id) ?? await client?.users?.fetch(id).catch(() => null);
+    if (user) people.set(id, { displayName: user.globalName ?? user.username, user });
+  }));
+  return people;
+}
+
 export const triviaCommand = {
   data: new SlashCommandBuilder()
     .setName('trivia')
     .setDescription('Start a trivia round — guess who said the mystery message!'),
 
-  async execute({ interaction, store }) {
+  async execute(context) {
+    const guildId = context.interaction.channelId; // one live trivia per channel
+    // Guards the async gap between the active-question check and the question being stored.
+    if (guildId && starting.has(guildId)) {
+      await context.interaction.reply({ content: ALREADY_ACTIVE, ephemeral: true });
+      return;
+    }
+    if (guildId) starting.add(guildId);
+    try {
+      await startTrivia(context);
+    } finally {
+      if (guildId) starting.delete(guildId);
+    }
+  },
+};
+
+async function startTrivia({ interaction, store }) {
     const guild = interaction.guild;
+    const channelId = interaction.channelId;
 
     if (!guild) {
       await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
       return;
     }
 
-    const activeQuestion = store.getActiveTriviaQuestion(guild.id);
+    const activeQuestion = store.getActiveTriviaQuestion(channelId);
     if (activeQuestion && isTriviaExpired(activeQuestion, Date.now(), store.triviaLifetimeMs)) {
-      store.clearActiveTriviaQuestion(guild.id);
+      store.clearActiveTriviaQuestion(channelId);
     } else if (activeQuestion) {
       await interaction.reply({
-        content: 'There\'s already an active trivia question in this server! Answer it first.',
+        content: ALREADY_ACTIVE,
         ephemeral: true,
       });
       return;
     }
 
     await interaction.deferReply();
-    const members = await getGuildMembers(guild);
+    const guildMembers = await getGuildMembers(guild);
 
-    const eligibleIds = store.listTrackedUsers().filter(
-      id => members.has(id) && store.getMessageCount(id) > 0,
-    );
+    // Everyone with downloaded messages is eligible, whether or not they are still in the server.
+    const eligibleIds = store.listTrackedUsers().filter(id => store.getMessageCount(id) > 0);
 
     if (eligibleIds.length < 1) {
-      await interaction.editReply('No users with downloaded messages are currently in this server. Use `/download` first!');
+      await interaction.editReply('No users with downloaded messages are available. Use `/download` first!');
       return;
     }
 
@@ -67,7 +98,8 @@ export const triviaCommand = {
     const distractorIds = shuffledPool.slice(0, optionCount - 1);
     const optionUserIds = fisherYates([correctUserId, ...distractorIds]);
 
-    store.setActiveTriviaQuestion(guild.id, { correctUserId, messageContent, optionUserIds });
+    store.setActiveTriviaQuestion(channelId, { correctUserId, messageContent, optionUserIds });
+    const members = await resolvePeople(interaction.client, guildMembers, optionUserIds);
 
     const posted = await interaction.editReply({
       content: mediaLinks(messageContent) || undefined,
@@ -76,13 +108,13 @@ export const triviaCommand = {
     });
 
     // ponytail: in-memory timer, lost on restart (message then stays unexpired); persist deadlines if that matters
-    const createdAt = store.getActiveTriviaQuestion(guild.id)?.created_at;
+    const createdAt = store.getActiveTriviaQuestion(channelId)?.created_at;
     setTimeout(async () => {
       try {
-        const active = store.getActiveTriviaQuestion(guild.id);
+        const active = store.getActiveTriviaQuestion(channelId);
         if (active?.created_at !== createdAt) return; // solved or replaced
         const guesses = JSON.parse(active.guesses ?? '[]');
-        store.clearActiveTriviaQuestion(guild.id);
+        store.clearActiveTriviaQuestion(channelId);
         const correctMember = members.get(correctUserId);
         await posted.edit({
           embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId, createdAt) })],
@@ -92,15 +124,14 @@ export const triviaCommand = {
         console.error('Failed to expire trivia message:', error);
       }
     }, store.triviaLifetimeMs + 500).unref();
-  },
-};
+}
 
 export async function handleTriviaButton(interaction, { store }) {
   const selectedUserId = interaction.customId.slice(TRIVIA_BUTTON_PREFIX.length);
   const guildId = interaction.guildId;
   const answererId = interaction.user.id;
 
-  const attempt = store.triviaAttempt(guildId, answererId, selectedUserId);
+  const attempt = store.triviaAttempt(guildId, answererId, selectedUserId, interaction.channelId);
 
   if (attempt.status === 'no_question') {
     await interaction.reply({ content: 'There\'s no active trivia question right now.', ephemeral: true });
@@ -121,11 +152,12 @@ export async function handleTriviaButton(interaction, { store }) {
     const bonusSeconds = store.getTriviaBonusSeconds();
     const bonus = elapsedMs <= bonusSeconds * 1000;
     store.triviaIncrementScore(answererId, guildId, bonus ? 2 : 1);
-    store.clearActiveTriviaQuestion(guildId);
+    store.clearActiveTriviaQuestion(interaction.channelId);
 
     const guild = interaction.guild;
     const optionUserIds = JSON.parse(question.option_user_ids);
-    const correctMember = guild.members.cache.get(question.correct_user_id);
+    const people = await resolvePeople(interaction.client, guild.members.cache, optionUserIds);
+    const correctMember = people.get(question.correct_user_id);
     const correctName = correctMember?.displayName ?? `<@${question.correct_user_id}>`;
     const winnerName = interaction.member?.displayName ?? interaction.user.username;
 
@@ -137,22 +169,23 @@ export async function handleTriviaButton(interaction, { store }) {
       bonus,
       bonusSeconds,
       streak: attempt.streak,
-      guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), guild.members.cache, question.correct_user_id, question.created_at),
+      guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), people, question.correct_user_id, question.created_at),
     });
 
     await interaction.update({
       embeds: [embed],
-      components: buildTriviaComponents(optionUserIds, guild.members.cache, {
+      components: buildTriviaComponents(optionUserIds, people, {
         disabled: true,
         correctUserId: question.correct_user_id,
       }),
     });
   } else {
     // `question` predates this guess, so re-read the stored guesses
-    const live = store.getActiveTriviaQuestion(guildId) ?? question;
+    const live = store.getActiveTriviaQuestion(interaction.channelId) ?? question;
+    const people = await resolvePeople(interaction.client, interaction.guild.members.cache, JSON.parse(question.option_user_ids));
     await interaction.update({
       embeds: [buildTriviaEmbed(question.message_content, {
-        guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), interaction.guild.members.cache, question.correct_user_id, question.created_at, true),
+        guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), people, question.correct_user_id, question.created_at, true),
       })],
     });
     await interaction.followUp({ content: '❌ Wrong! That\'s your one attempt used up.', ephemeral: true });
