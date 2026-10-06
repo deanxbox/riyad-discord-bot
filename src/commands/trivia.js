@@ -5,9 +5,9 @@ import { getGuildMembers } from '../services/guild-members.js';
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
 const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
-const guessLines = (guesses, members, correctId) => guesses
+const guessLines = (guesses, members, correctId, createdAt) => guesses
   .filter(g => g.guessId !== correctId)
-  .map(g => `• **${nameOf(members, g.userId)}** guessed ${nameOf(members, g.guessId)}`).join('\n');
+  .map(g => `• **${nameOf(members, g.userId)}** guessed ${nameOf(members, g.guessId)}${g.at ? ` (${((g.at - Date.parse(createdAt)) / 1000).toFixed(2)}s)` : ''}`).join('\n');
 const guessBlock = lines => (lines ? `\n\n❌ **Wrong guesses:**\n${lines.slice(0, 800)}` : '');
 
 export const triviaCommand = {
@@ -84,7 +84,7 @@ export const triviaCommand = {
         store.clearActiveTriviaQuestion(guild.id);
         const correctMember = members.get(correctUserId);
         await posted.edit({
-          embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId) })],
+          embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId, createdAt) })],
           components: buildTriviaComponents(optionUserIds, members, { disabled: true, correctUserId }),
         });
       } catch (error) {
@@ -135,7 +135,7 @@ export async function handleTriviaButton(interaction, { store }) {
       elapsedMs,
       bonus,
       bonusSeconds,
-      guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), guild.members.cache, question.correct_user_id),
+      guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), guild.members.cache, question.correct_user_id, question.created_at),
     });
 
     await interaction.update({

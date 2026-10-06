@@ -1055,7 +1055,7 @@ export class DataStore extends EventEmitter {
 
       answeredIds.push(normalizedUserId);
       const guesses = JSON.parse(question.guesses ?? '[]');
-      guesses.push({ userId: normalizedUserId, guessId: selectedUserId });
+      guesses.push({ userId: normalizedUserId, guessId: selectedUserId, at: Date.now() });
       this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), JSON.stringify(guesses), normalizedGuildId);
 
       return { status: 'ok', question };
