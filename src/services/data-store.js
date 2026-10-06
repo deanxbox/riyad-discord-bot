@@ -20,8 +20,10 @@ export class DataStore extends EventEmitter {
     alwaysReplyUserId = '256876746861707264',
     nerdEmoji = '🤓',
     triviaTimeoutSeconds = 60,
+    triviaBonusSeconds = 1.5,
   } = {}) {
     super();
+    this.defaultTriviaBonusSeconds = Number.isFinite(triviaBonusSeconds) && triviaBonusSeconds >= 0 && triviaBonusSeconds <= 60 ? triviaBonusSeconds : 1.5;
     this.defaultTriviaTimeoutSeconds = Number.isFinite(triviaTimeoutSeconds) && triviaTimeoutSeconds >= 5 && triviaTimeoutSeconds <= 3600 ? triviaTimeoutSeconds : DEFAULT_TRIVIA_LIFETIME_MS / 1000;
     this.on('change', change => { if (change?.type === 'user') this.messageSourcesCache = null; });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -133,6 +135,7 @@ export class DataStore extends EventEmitter {
   }
 
   runMigrations() {
+    this.addColumnIfMissing('trivia_active', 'guesses', "TEXT NOT NULL DEFAULT '[]'");
     this.addColumnIfMissing('user_settings', 'reply_chance_override', 'INTEGER');
     this.addColumnIfMissing('user_settings', 'media_skipped', 'INTEGER NOT NULL DEFAULT 0');
     this.backfillMessageGuilds();
@@ -323,7 +326,7 @@ export class DataStore extends EventEmitter {
     `);
 
     this.selectTriviaActiveStmt = this.db.prepare(`
-      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at
+      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, guesses, created_at
       FROM trivia_active
       WHERE guild_id = ?
     `);
@@ -333,13 +336,13 @@ export class DataStore extends EventEmitter {
     `);
 
     this.updateTriviaAnsweredStmt = this.db.prepare(`
-      UPDATE trivia_active SET answered_user_ids = ? WHERE guild_id = ?
+      UPDATE trivia_active SET answered_user_ids = ?, guesses = ? WHERE guild_id = ?
     `);
 
     this.upsertTriviaScoreStmt = this.db.prepare(`
       INSERT INTO trivia_scores (user_id, guild_id, score)
-      VALUES (?, ?, 1)
-      ON CONFLICT(user_id, guild_id) DO UPDATE SET score = score + 1
+      VALUES (?, ?, ?)
+      ON CONFLICT(user_id, guild_id) DO UPDATE SET score = score + excluded.score
     `);
 
     this.selectTriviaLeaderboardStmt = this.db.prepare(`
@@ -481,6 +484,17 @@ export class DataStore extends EventEmitter {
   setTriviaTimeoutSeconds(value) {
     if (!Number.isInteger(value) || value < 5 || value > 3600) throw new RangeError('Trivia timeout must be 5 to 3600 seconds.');
     this.setMetadata('trivia_timeout_seconds', String(value));
+    return value;
+  }
+
+  getTriviaBonusSeconds() {
+    const value = Number(this.getMetadata('trivia_bonus_seconds') ?? this.defaultTriviaBonusSeconds);
+    return Number.isFinite(value) && value >= 0 && value <= 60 ? value : this.defaultTriviaBonusSeconds;
+  }
+
+  setTriviaBonusSeconds(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 60) throw new RangeError('Trivia bonus window must be 0 to 60 seconds (0 disables it).');
+    this.setMetadata('trivia_bonus_seconds', String(value));
     return value;
   }
 
@@ -1024,7 +1038,7 @@ export class DataStore extends EventEmitter {
 
   // Atomically registers a user's answer attempt.
   // Returns { status: 'no_question' | 'already_answered' | 'ok', question? }
-  triviaAttempt(guildId, userId) {
+  triviaAttempt(guildId, userId, selectedUserId = null) {
     const normalizedGuildId = String(guildId);
     const normalizedUserId = String(userId);
 
@@ -1040,7 +1054,9 @@ export class DataStore extends EventEmitter {
       if (answeredIds.includes(normalizedUserId)) return { status: 'already_answered' };
 
       answeredIds.push(normalizedUserId);
-      this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), normalizedGuildId);
+      const guesses = JSON.parse(question.guesses ?? '[]');
+      guesses.push({ userId: normalizedUserId, guessId: selectedUserId });
+      this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), JSON.stringify(guesses), normalizedGuildId);
 
       return { status: 'ok', question };
     });
@@ -1049,8 +1065,8 @@ export class DataStore extends EventEmitter {
     return result;
   }
 
-  triviaIncrementScore(userId, guildId) {
-    this.upsertTriviaScoreStmt.run(String(userId), String(guildId));
+  triviaIncrementScore(userId, guildId, points = 1) {
+    this.upsertTriviaScoreStmt.run(String(userId), String(guildId), points);
     this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
 

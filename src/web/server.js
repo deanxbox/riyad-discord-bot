@@ -45,6 +45,7 @@ export function validateSetting(key, value) {
   if (key === 'downloadConcurrency' && Number.isInteger(value) && value >= 1 && value <= 10) return value;
   if (key === 'triviaOptionCount' && Number.isInteger(value) && value >= 2 && value <= 10) return value;
   if (key === 'triviaTimeoutSeconds' && Number.isInteger(value) && value >= 5 && value <= 3600) return value;
+  if (key === 'triviaBonusSeconds' && typeof value === 'number' && value >= 0 && value <= 60) return value;
   if (key === 'replyDelaySeconds' && typeof value === 'number' && value >= 0 && value <= 60) return value;
   if (key === 'typingIndicator' && typeof value === 'boolean') return value;
   if (['alwaysReplyUserId', 'specialUserId', 'specialRoleId'].includes(key) && isSnowflake(value)) return value;
@@ -275,7 +276,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
           users, jobs, queue, leaderboard,
           replyChancePercent: store.getReplyChancePercent(), reactionChanceDenominator: store.getReactionChanceDenominator(),
           downloadConcurrency: store.getDownloadConcurrency(),
-          triviaOptionCount: store.getTriviaOptionCount(), triviaTimeoutSeconds: store.getTriviaTimeoutSeconds(), replyDelaySeconds: store.getReplyDelaySeconds(), typingIndicator: store.getTypingIndicator(),
+          triviaOptionCount: store.getTriviaOptionCount(), triviaTimeoutSeconds: store.getTriviaTimeoutSeconds(), triviaBonusSeconds: store.getTriviaBonusSeconds(), replyDelaySeconds: store.getReplyDelaySeconds(), typingIndicator: store.getTypingIndicator(),
           alwaysReplyUser: await resolveUser(config.alwaysReplyUserId), nerdEmoji: config.nerdEmoji,
           specialUser: await resolveUser(config.specialUserId), specialRoleId: config.specialRoleId,
           specialRole: [...(client?.guilds?.cache?.values?.() || [])].map(g => g.roles.cache.get(config.specialRoleId)).find(Boolean)?.name || config.specialRoleId,
@@ -370,6 +371,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         else if (key === 'downloadConcurrency') { store.setDownloadConcurrency(value); downloadJobs.drain(); }
         else if (key === 'triviaOptionCount') store.setTriviaOptionCount(value);
         else if (key === 'triviaTimeoutSeconds') store.setTriviaTimeoutSeconds(value);
+        else if (key === 'triviaBonusSeconds') store.setTriviaBonusSeconds(value);
         else if (key === 'replyDelaySeconds') store.setReplyDelaySeconds(value);
         else if (key === 'typingIndicator') store.setTypingIndicator(value);
         else if (key === 'alwaysReplyUserId') config.alwaysReplyUserId = store.setAlwaysReplyUserId(value);

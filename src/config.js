@@ -29,6 +29,7 @@ export const config = {
   nerdEmoji: process.env.NERD_EMOJI?.trim() || '\u{1F913}',
   defaultReplyChancePercent: Number(process.env.DEFAULT_REPLY_CHANCE_PERCENT?.trim() || 4),
   triviaTimeoutSeconds: Number(process.env.TRIVIA_TIMEOUT_SECONDS?.trim() || 60),
+  triviaBonusSeconds: Number(process.env.TRIVIA_BONUS_SECONDS?.trim() || 1.5),
   webDashboardEnabled: process.env.WEB_DASHBOARD_ENABLED === 'true',
   webDashboardHost: process.env.WEB_DASHBOARD_HOST?.trim() || '127.0.0.1',
   webDashboardPort: Number(process.env.WEB_DASHBOARD_PORT?.trim() || 8787),

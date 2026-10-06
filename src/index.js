@@ -15,6 +15,7 @@ const store = new DataStore(config.dbPath, {
   alwaysReplyUserId: config.alwaysReplyUserId,
   nerdEmoji: config.nerdEmoji,
   triviaTimeoutSeconds: config.triviaTimeoutSeconds,
+  triviaBonusSeconds: config.triviaBonusSeconds,
 });
 config.alwaysReplyUserId = store.getAlwaysReplyUserId();
 config.nerdEmoji = store.getNerdEmoji();

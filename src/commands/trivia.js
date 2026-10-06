@@ -4,6 +4,12 @@ import { getGuildMembers } from '../services/guild-members.js';
 
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
+const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
+const guessLines = (guesses, members, correctId) => guesses
+  .filter(g => g.guessId !== correctId)
+  .map(g => `• **${nameOf(members, g.userId)}** guessed ${nameOf(members, g.guessId)}`).join('\n');
+const guessBlock = lines => (lines ? `\n\n❌ **Wrong guesses:**\n${lines.slice(0, 800)}` : '');
+
 export const triviaCommand = {
   data: new SlashCommandBuilder()
     .setName('trivia')
@@ -72,11 +78,13 @@ export const triviaCommand = {
     const createdAt = store.getActiveTriviaQuestion(guild.id)?.created_at;
     setTimeout(async () => {
       try {
-        if (store.getActiveTriviaQuestion(guild.id)?.created_at !== createdAt) return; // solved or replaced
+        const active = store.getActiveTriviaQuestion(guild.id);
+        if (active?.created_at !== createdAt) return; // solved or replaced
+        const guesses = JSON.parse(active.guesses ?? '[]');
         store.clearActiveTriviaQuestion(guild.id);
         const correctMember = members.get(correctUserId);
         await posted.edit({
-          embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>` })],
+          embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId) })],
           components: buildTriviaComponents(optionUserIds, members, { disabled: true, correctUserId }),
         });
       } catch (error) {
@@ -91,7 +99,7 @@ export async function handleTriviaButton(interaction, { store }) {
   const guildId = interaction.guildId;
   const answererId = interaction.user.id;
 
-  const attempt = store.triviaAttempt(guildId, answererId);
+  const attempt = store.triviaAttempt(guildId, answererId, selectedUserId);
 
   if (attempt.status === 'no_question') {
     await interaction.reply({ content: 'There\'s no active trivia question right now.', ephemeral: true });
@@ -108,7 +116,10 @@ export async function handleTriviaButton(interaction, { store }) {
 
   if (isCorrect) {
     // Award point and close question before yielding to the event loop
-    store.triviaIncrementScore(answererId, guildId);
+    const elapsedMs = Date.now() - Date.parse(question.created_at);
+    const bonusSeconds = store.getTriviaBonusSeconds();
+    const bonus = elapsedMs <= bonusSeconds * 1000;
+    store.triviaIncrementScore(answererId, guildId, bonus ? 2 : 1);
     store.clearActiveTriviaQuestion(guildId);
 
     const guild = interaction.guild;
@@ -121,6 +132,10 @@ export async function handleTriviaButton(interaction, { store }) {
       solved: true,
       winnerName,
       correctName,
+      elapsedMs,
+      bonus,
+      bonusSeconds,
+      guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), guild.members.cache, question.correct_user_id),
     });
 
     await interaction.update({
@@ -142,7 +157,7 @@ const IMAGE_URL = /https?:\/\/\S+?\.(?:gif|png|jpe?g|webp)(?:\?\S*)?(?=\s|$)/i;
 // Other links (tenor, giphy, video) can't go in an embed image; post them as content so Discord unfurls them.
 const mediaLinks = text => (text.match(/https?:\/\/\S+/g) ?? []).filter(u => !IMAGE_URL.test(u)).join('\n');
 
-function buildTriviaEmbed(messageContent, { solved = false, expired = false, winnerName, correctName } = {}) {
+function buildTriviaEmbed(messageContent, { solved = false, expired = false, winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, guessLines: lines = '' } = {}) {
   const image = messageContent.match(IMAGE_URL)?.[0];
   const display = messageContent.length > 900 ? `${messageContent.slice(0, 900)}…` : messageContent;
 
@@ -154,7 +169,7 @@ function buildTriviaEmbed(messageContent, { solved = false, expired = false, win
 >>> ${display}
 
 ⏰ Time's up! Nobody got it in time.
-The answer was **${correctName}**.`)
+The answer was **${correctName}**.${guessBlock(lines)}`)
       .setColor(0xED4245)
       .setImage(image ?? null)
       .setTimestamp();
@@ -165,8 +180,9 @@ The answer was **${correctName}**.`)
       .setTitle('🎭 Trivia — Solved!')
       .setDescription(
         `**Who said this?**\n\n>>> ${display}\n\n` +
-        `✅ **${winnerName}** got it right!\n` +
-        `The answer was **${correctName}**.`,
+        `✅ **${winnerName}** got it right in **${(elapsedMs / 1000).toFixed(2)}s**!\n` +
+        (bonus ? `⚡ **x2 speed bonus!** Answered within ${bonusSeconds}s for 2 points.\n` : '') +
+        `The answer was **${correctName}**.${guessBlock(lines)}`,
       )
       .setColor(0x57F287)
       .setImage(image ?? null)
