@@ -20,6 +20,7 @@ test('trivia skips a full fetch when the guild cache is complete', async () => {
       getTriviaOptionCount: () => 4,
       getRandomMessage: () => 'hello',
       setActiveTriviaQuestion: () => {},
+      restartTriviaClock: () => {},
     },
   });
   assert.equal(reply.components[0].components.length, 4);

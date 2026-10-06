@@ -107,6 +107,8 @@ async function startTrivia({ interaction, store }) {
       components: buildTriviaComponents(optionUserIds, members),
     });
 
+    store.restartTriviaClock(channelId); // clock starts when the question is on screen, not when it was saved
+
     // ponytail: in-memory timer, lost on restart (message then stays unexpired); persist deadlines if that matters
     const createdAt = store.getActiveTriviaQuestion(channelId)?.created_at;
     setTimeout(async () => {

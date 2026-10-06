@@ -1052,6 +1052,11 @@ export class DataStore extends EventEmitter {
     return this.selectTriviaActiveStmt.get(String(guildId)) ?? null;
   }
 
+  // Restarts the answer clock (solve time, bonus window, expiry) once the question is actually visible.
+  restartTriviaClock(channelId) {
+    this.db.prepare('UPDATE trivia_active SET created_at = ? WHERE guild_id = ?').run(nowIso(), String(channelId));
+  }
+
   clearActiveTriviaQuestion(guildId) {
     this.deleteTriviaActiveStmt.run(String(guildId));
     this.emit('change', { type: 'trivia', guildId: String(guildId) });
