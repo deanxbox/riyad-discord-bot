@@ -1,7 +1,13 @@
 import { commandCollection } from '../commands/index.js';
 import { handleTriviaButton, TRIVIA_BUTTON_PREFIX } from '../commands/trivia.js';
+import { handleScoreboardSort, SCOREBOARD_SORT_ID } from '../commands/scoreboard.js';
 
 export async function handleInteractionCreate(interaction, context) {
+  if (interaction.isStringSelectMenu() && interaction.customId === SCOREBOARD_SORT_ID) {
+    await handleScoreboardSort(interaction, context);
+    return;
+  }
+
   if (interaction.isButton()) {
     const handled = await context.downloadJobs.handleButton(interaction);
 

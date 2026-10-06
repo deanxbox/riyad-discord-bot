@@ -148,7 +148,7 @@ async function main() {
       'unknown users receive an actual default avatar URL');
     const scoreboardCalls = [];
     await scoreboardCommand.execute({
-      store: { triviaGetLeaderboard: () => [{ user_id: '123456789012345678', score: 2 }, { user_id: '223456789012345678', score: 1 }] },
+      store: { triviaGetLeaderboard: () => [{ user_id: '123456789012345678', score: 2, wins: 2, losses: 0, ratio: null }, { user_id: '223456789012345678', score: 1, wins: 1, losses: 3, ratio: null }] },
       interaction: {
         guild: { id: '123456789012345678', members: { cache: new Map(), fetch: async id => {
           scoreboardCalls.push(`fetch:${id}`);
@@ -156,12 +156,13 @@ async function main() {
           return { displayName: 'Player' };
         } } },
         deferReply: async () => scoreboardCalls.push('defer'),
-        editReply: async message => scoreboardCalls.push(message.embeds[0].data.description),
+        editReply: async message => { assert.equal(message.components.length, 1, 'sort menu attached'); scoreboardCalls.push(message.embeds[0].data.description); },
       },
     });
     assert.equal(scoreboardCalls[0], 'defer', 'acknowledge scoreboard before fetching members');
-    assert.match(scoreboardCalls.at(-1), /Player — 2 pts/);
-    assert.match(scoreboardCalls.at(-1), /<@223456789012345678> — 1 pt/, 'missing guild members fall back to mentions');
+    assert.match(scoreboardCalls.at(-1), /\*\*Player\*\* — 2 pts/);
+    assert.match(scoreboardCalls.at(-1), /2W-0L/);
+    assert.match(scoreboardCalls.at(-1), /User …5678 +1 /, 'missing guild members fall back to a short ID label');
 
     store.setActiveTriviaQuestion('guild', {
       correctUserId: '123', messageContent: 'text', optionUserIds: ['123'],

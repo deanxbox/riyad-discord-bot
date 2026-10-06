@@ -1103,11 +1103,15 @@ export class DataStore extends EventEmitter {
     return streak;
   }
 
-  // sort: 'points' | 'ratio' (wins / max(losses, 1), only players with enough guesses)
+  // sort: points|ratio, optionally _asc/_desc (default desc). Ratio = wins / max(losses, 1), only players with enough guesses.
   triviaGetLeaderboard(guildId, limit = 10, sort = 'points') {
-    const rows = sort === 'ratio'
-      ? this.selectTriviaRatioLeaderboardStmt.all(String(guildId), TRIVIA_MIN_RATIO_GUESSES, limit)
-      : this.selectTriviaLeaderboardStmt.all(String(guildId), limit);
+    const dir = String(sort).endsWith('_asc') ? 'ASC' : 'DESC';
+    const rows = String(sort).startsWith('ratio')
+      ? this.db.prepare(`SELECT user_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak FROM trivia_scores
+          WHERE guild_id = ? AND wins + losses >= ? ORDER BY CAST(wins AS REAL) / MAX(losses, 1) ${dir}, wins ${dir}, user_id ASC LIMIT ?`)
+        .all(String(guildId), TRIVIA_MIN_RATIO_GUESSES, limit)
+      : this.db.prepare(`SELECT user_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak FROM trivia_scores
+          WHERE guild_id = ? ORDER BY score ${dir}, user_id ASC LIMIT ?`).all(String(guildId), limit);
     return rows.map(r => ({ ...r, ratio: r.wins + r.losses >= TRIVIA_MIN_RATIO_GUESSES ? r.wins / Math.max(r.losses, 1) : null }));
   }
 
