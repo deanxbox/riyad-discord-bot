@@ -6,10 +6,12 @@ export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
 const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
 // Where and when the mystery message was originally sent (<t:..> renders in each viewer's own timezone).
-const sourceLine = (client, guildId, at) => {
+const isId = value => /^\d{15,25}$/.test(String(value ?? ''));
+const sourceLine = (client, guildId, at, channelId, messageId) => {
   const unix = Math.floor(Date.parse(at) / 1000);
   const server = (guildId && client?.guilds?.cache?.get(guildId)?.name) || 'an unknown server';
-  return `📍 Said in **${server}**${Number.isFinite(unix) ? ` on <t:${unix}:F>` : ''}`;
+  const link = isId(guildId) && isId(channelId) && isId(messageId) ? `\n🔗 [Jump to the message](https://discord.com/channels/${guildId}/${channelId}/${messageId})` : '';
+  return `📍 Said in **${server}**${Number.isFinite(unix) ? ` on <t:${unix}:F>` : ''}${link}`;
 };
 const sourceBlock = source => (source ? `\n\n${source}` : '');
 const streakNote = streak => (streak <= -3 ? ` 🧊 **${-streak} loss streak**` : '');
@@ -106,8 +108,8 @@ async function startTrivia({ interaction, store }) {
     const distractorIds = shuffledPool.slice(0, optionCount - 1);
     const optionUserIds = fisherYates([correctUserId, ...distractorIds]);
 
-    store.setActiveTriviaQuestion(channelId, { correctUserId, messageContent, optionUserIds, sourceGuildId: sample.guild_id, sourceAt: sample.created_at });
-    const source = sourceLine(interaction.client, sample.guild_id, sample.created_at);
+    store.setActiveTriviaQuestion(channelId, { correctUserId, messageContent, optionUserIds, sourceGuildId: sample.guild_id, sourceAt: sample.created_at, sourceChannelId: sample.channel_id, sourceMessageId: sample.message_id });
+    const source = sourceLine(interaction.client, sample.guild_id, sample.created_at, sample.channel_id, sample.message_id);
     const members = await resolvePeople(interaction.client, guildMembers, optionUserIds);
 
     const posted = await interaction.editReply({
@@ -168,7 +170,7 @@ export async function handleTriviaButton(interaction, { store }) {
       const ids = JSON.parse(q.option_user_ids);
       const people = await resolvePeople(interaction.client, interaction.guild.members.cache, ids);
       await interaction.update({
-        embeds: [buildTriviaEmbed(q.message_content, { expired: true, source: sourceLine(interaction.client, q.source_guild_id, q.source_at), correctName: people.get(q.correct_user_id)?.displayName ?? `<@${q.correct_user_id}>`, guessLines: guessLines(JSON.parse(q.guesses ?? '[]'), people, q.correct_user_id, q.created_at) })],
+        embeds: [buildTriviaEmbed(q.message_content, { expired: true, source: sourceLine(interaction.client, q.source_guild_id, q.source_at, q.source_channel_id, q.source_message_id), correctName: people.get(q.correct_user_id)?.displayName ?? `<@${q.correct_user_id}>`, guessLines: guessLines(JSON.parse(q.guesses ?? '[]'), people, q.correct_user_id, q.created_at) })],
         components: buildTriviaComponents(ids, people, { disabled: true, correctUserId: q.correct_user_id }),
       });
       return;
@@ -202,7 +204,7 @@ export async function handleTriviaButton(interaction, { store }) {
 
     const embed = buildTriviaEmbed(question.message_content, {
       solved: true,
-      source: sourceLine(interaction.client, question.source_guild_id, question.source_at),
+      source: sourceLine(interaction.client, question.source_guild_id, question.source_at, question.source_channel_id, question.source_message_id),
       winnerName,
       correctName,
       elapsedMs,
