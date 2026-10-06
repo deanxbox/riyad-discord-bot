@@ -62,6 +62,7 @@ async function buildScoreboard(guild, store, sort) {
   const extra = [
     records.winStreak && `🔥 Best win streak: **${records.winStreak.value}** (${who(records.winStreak)})`,
     records.lossStreak && `🧊 Worst loss streak: **${records.lossStreak.value}** (${who(records.lossStreak)})`,
+    records.fastest && `⏱️ Fastest answer ever: **${who(records.fastest)}** (${(records.fastest.value / 1000).toFixed(2)}s)`,
     records.firstGuesses && `⚡ Fastest most often: **${who(records.firstGuesses)}** (${records.firstGuesses.value}x)`,
   ].filter(Boolean);
 

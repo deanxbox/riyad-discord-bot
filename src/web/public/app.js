@@ -305,7 +305,7 @@ function render(stateData) {
       return item;
     }));
     const rec = state.triviaRecords || {}, name = r => person(r.user);
-    $('trivia-records').textContent = [rec.winStreak && `🔥 Best win streak: ${rec.winStreak.value} (${name(rec.winStreak)})`, rec.lossStreak && `🧊 Worst loss streak: ${rec.lossStreak.value} (${name(rec.lossStreak)})`, rec.firstGuesses && `⚡ Fastest most often: ${name(rec.firstGuesses)} (${rec.firstGuesses.value}x)`].filter(Boolean).join('  ·  ');
+    $('trivia-records').textContent = [rec.winStreak && `🔥 Best win streak: ${rec.winStreak.value} (${name(rec.winStreak)})`, rec.lossStreak && `🧊 Worst loss streak: ${rec.lossStreak.value} (${name(rec.lossStreak)})`, rec.fastest && `⏱️ Fastest answer ever: ${name(rec.fastest)} (${(rec.fastest.value / 1000).toFixed(2)}s)`, rec.firstGuesses && `⚡ Fastest most often: ${name(rec.firstGuesses)} (${rec.firstGuesses.value}x)`].filter(Boolean).join('  ·  ');
     if (!state.leaderboard.length) $('scores').append(node('li', 'No trivia scores for this server yet.', 'empty-state'));
   }
 }

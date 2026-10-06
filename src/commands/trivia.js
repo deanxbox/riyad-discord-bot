@@ -11,7 +11,7 @@ const sourceLine = (client, guildId, at) => {
   const server = (guildId && client?.guilds?.cache?.get(guildId)?.name) || 'an unknown server';
   return `📍 Said in **${server}**${Number.isFinite(unix) ? ` on <t:${unix}:F>` : ''}`;
 };
-const sourceBlock = source => (source ? `\n${source}` : '');
+const sourceBlock = source => (source ? `\n\n${source}` : '');
 const streakNote = streak => (streak <= -3 ? ` 🧊 **${-streak} loss streak**` : '');
 const guessLines = (guesses, members, correctId, createdAt, live = false) => guesses
   .filter(g => g.guessId !== correctId)
@@ -120,12 +120,30 @@ async function startTrivia({ interaction, store }) {
 
     // ponytail: in-memory timer, lost on restart (message then stays unexpired); persist deadlines if that matters
     const createdAt = store.getActiveTriviaQuestion(channelId)?.created_at;
+    // Visible 3-2-1 countdown on the live embed (edits are well inside Discord's rate limit).
+    const lifetimeMs = store.triviaLifetimeMs;
+    for (const seconds of [3, 2, 1]) {
+      if (lifetimeMs <= 4000) break;
+      setTimeout(async () => {
+        try {
+          const active = store.getActiveTriviaQuestion(channelId);
+          if (active?.created_at !== createdAt) return; // solved or replaced
+          await posted.edit({ embeds: [buildTriviaEmbed(messageContent, { countdown: seconds, guessLines: guessLines(JSON.parse(active.guesses ?? '[]'), members, correctUserId, createdAt, true) })] });
+        } catch (error) {
+          console.error('Failed to update trivia countdown:', error);
+        }
+      }, lifetimeMs - seconds * 1000).unref();
+    }
+
     setTimeout(async () => {
       try {
+        // Decide from the message itself: the DB row may already be gone (late click, new round).
         const active = store.getActiveTriviaQuestion(channelId);
-        if (active?.created_at !== createdAt) return; // solved or replaced
-        const guesses = JSON.parse(active.guesses ?? '[]');
-        store.clearActiveTriviaQuestion(channelId);
+        const mine = active?.created_at === createdAt;
+        const current = await posted.fetch().catch(() => null);
+        if (!(current ? current.embeds[0]?.title?.includes('Trivia Time') : mine)) return; // already solved or expired
+        const guesses = mine ? JSON.parse(active.guesses ?? '[]') : [];
+        if (mine) store.clearActiveTriviaQuestion(channelId);
         const correctMember = members.get(correctUserId);
         await posted.edit({
           embeds: [buildTriviaEmbed(messageContent, { expired: true, source, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId, createdAt) })],
@@ -145,6 +163,16 @@ export async function handleTriviaButton(interaction, { store }) {
   const attempt = store.triviaAttempt(guildId, answererId, selectedUserId, interaction.channelId);
 
   if (attempt.status === 'no_question') {
+    const q = attempt.question;
+    if (q && interaction.message) { // clicked after it timed out: show it as expired
+      const ids = JSON.parse(q.option_user_ids);
+      const people = await resolvePeople(interaction.client, interaction.guild.members.cache, ids);
+      await interaction.update({
+        embeds: [buildTriviaEmbed(q.message_content, { expired: true, source: sourceLine(interaction.client, q.source_guild_id, q.source_at), correctName: people.get(q.correct_user_id)?.displayName ?? `<@${q.correct_user_id}>`, guessLines: guessLines(JSON.parse(q.guesses ?? '[]'), people, q.correct_user_id, q.created_at) })],
+        components: buildTriviaComponents(ids, people, { disabled: true, correctUserId: q.correct_user_id }),
+      });
+      return;
+    }
     await interaction.reply({ content: 'There\'s no active trivia question right now.', ephemeral: true });
     return;
   }
@@ -197,6 +225,7 @@ export async function handleTriviaButton(interaction, { store }) {
     const people = await resolvePeople(interaction.client, interaction.guild.members.cache, JSON.parse(question.option_user_ids));
     await interaction.update({
       embeds: [buildTriviaEmbed(question.message_content, {
+        countdown: (left => (left > 0 && left <= 3000 ? Math.ceil(left / 1000) : 0))(store.triviaLifetimeMs - (Date.now() - Date.parse(question.created_at))),
         guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), people, question.correct_user_id, question.created_at, true),
       })],
     });
@@ -207,7 +236,7 @@ const IMAGE_URL = /https?:\/\/\S+?\.(?:gif|png|jpe?g|webp)(?:\?\S*)?(?=\s|$)/i;
 // Other links (tenor, giphy, video) can't go in an embed image; post them as content so Discord unfurls them.
 const mediaLinks = text => (text.match(/https?:\/\/\S+/g) ?? []).filter(u => !IMAGE_URL.test(u)).join('\n');
 
-function buildTriviaEmbed(messageContent, { solved = false, expired = false, source = '', winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, streak = 0, guessLines: lines = '' } = {}) {
+function buildTriviaEmbed(messageContent, { solved = false, expired = false, source = '', winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, streak = 0, countdown = 0, guessLines: lines = '' } = {}) {
   const image = messageContent.match(IMAGE_URL)?.[0];
   const display = messageContent.length > 900 ? `${messageContent.slice(0, 900)}…` : messageContent;
 
@@ -243,8 +272,8 @@ The answer was **${correctName}**.${sourceBlock(source)}${guessBlock(lines)}`)
 
   return new EmbedBuilder()
     .setTitle('🎭 Trivia Time!')
-    .setDescription(`**Who said this?**\n\n>>> ${display}${guessBlock(lines, false)}`)
-    .setColor(0x5865F2)
+    .setDescription(`**Who said this?**\n\n>>> ${display}${guessBlock(lines, false)}${countdown ? `\n\n⏳ **Expires in ${countdown}...**` : ''}`)
+    .setColor(countdown ? 0xFEE75C : 0x5865F2)
     .setImage(image ?? null)
     .setFooter({ text: 'Each player gets one attempt — first correct answer wins a point!' })
     .setTimestamp();
@@ -255,7 +284,7 @@ export function buildTriviaComponents(optionUserIds, membersCache, { disabled = 
     const member = membersCache.get(userId);
     const nick = member?.displayName ?? `User …${userId.slice(-4)}`;
     const profile = member?.user?.globalName ?? member?.user?.username;
-    const label = (profile && profile !== nick ? `${nick} (${profile})` : nick).slice(0, 80);
+    const label = (profile && profile !== nick ? `${profile} (${nick})` : nick).slice(0, 80);
 
     let style = ButtonStyle.Primary;
     if (disabled) {

@@ -142,6 +142,7 @@ export class DataStore extends EventEmitter {
     for (const column of ['wins', 'losses', 'first_guesses', 'streak', 'best_win_streak', 'best_loss_streak']) {
       this.addColumnIfMissing('trivia_scores', column, 'INTEGER NOT NULL DEFAULT 0'); // streak: +n win run, -n loss run
     }
+    this.addColumnIfMissing('trivia_scores', 'fastest_ms', 'INTEGER');
     this.addColumnIfMissing('user_settings', 'reply_chance_override', 'INTEGER');
     this.addColumnIfMissing('user_settings', 'media_skipped', 'INTEGER NOT NULL DEFAULT 0');
     this.backfillMessageGuilds();
@@ -369,11 +370,12 @@ export class DataStore extends EventEmitter {
 
     this.selectTriviaStatStmt = this.db.prepare('SELECT streak, best_win_streak, best_loss_streak FROM trivia_scores WHERE user_id = ? AND guild_id = ?');
     this.upsertTriviaStatStmt = this.db.prepare(`
-      INSERT INTO trivia_scores (user_id, guild_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak)
-      VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+      INSERT INTO trivia_scores (user_id, guild_id, score, wins, losses, first_guesses, streak, best_win_streak, best_loss_streak, fastest_ms)
+      VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id, guild_id) DO UPDATE SET
         wins = wins + excluded.wins, losses = losses + excluded.losses, first_guesses = first_guesses + excluded.first_guesses,
-        streak = excluded.streak, best_win_streak = excluded.best_win_streak, best_loss_streak = excluded.best_loss_streak
+        streak = excluded.streak, best_win_streak = excluded.best_win_streak, best_loss_streak = excluded.best_loss_streak,
+        fastest_ms = CASE WHEN excluded.fastest_ms IS NOT NULL AND (fastest_ms IS NULL OR excluded.fastest_ms < fastest_ms) THEN excluded.fastest_ms ELSE fastest_ms END
     `);
   }
 
@@ -1079,7 +1081,7 @@ export class DataStore extends EventEmitter {
       if (!question) return { status: 'no_question' };
       if (isTriviaExpired(question, Date.now(), this.triviaLifetimeMs)) {
         this.deleteTriviaActiveStmt.run(normalizedChannelId);
-        return { status: 'no_question', expired: true };
+        return { status: 'no_question', expired: true, question };
       }
 
       const answeredIds = JSON.parse(question.answered_user_ids);
@@ -1089,14 +1091,13 @@ export class DataStore extends EventEmitter {
       answeredIds.push(normalizedUserId);
       const guesses = JSON.parse(question.guesses ?? '[]');
       const entry = { userId: normalizedUserId, guessId: selectedUserId, at: Date.now() };
-      if (selectedUserId != null) entry.streak = this.recordTriviaResult(normalizedGuildId, normalizedUserId, selectedUserId === question.correct_user_id, first);
+      if (selectedUserId != null) entry.streak = this.recordTriviaResult(normalizedGuildId, normalizedUserId, selectedUserId === question.correct_user_id, first, entry.at - Date.parse(question.created_at));
       guesses.push(entry);
       this.updateTriviaAnsweredStmt.run(JSON.stringify(answeredIds), JSON.stringify(guesses), normalizedChannelId);
 
       return { status: 'ok', question, streak: entry.streak ?? 0 };
     });
     if (result.expired || result.status === 'ok') this.emit('change', { type: 'trivia', guildId: normalizedGuildId });
-    if (result.expired) return { status: 'no_question' };
     return result;
   }
 
@@ -1106,11 +1107,11 @@ export class DataStore extends EventEmitter {
   }
 
   // Updates W/L, first-answer count and streaks; returns the new signed streak.
-  recordTriviaResult(guildId, userId, correct, first) {
+  recordTriviaResult(guildId, userId, correct, first, elapsedMs = null) {
     const row = this.selectTriviaStatStmt.get(userId, guildId) ?? { streak: 0, best_win_streak: 0, best_loss_streak: 0 };
     const streak = correct ? Math.max(row.streak, 0) + 1 : Math.min(row.streak, 0) - 1;
     this.upsertTriviaStatStmt.run(userId, guildId, correct ? 1 : 0, correct ? 0 : 1, first ? 1 : 0, streak,
-      Math.max(row.best_win_streak, streak), Math.max(row.best_loss_streak, -streak));
+      Math.max(row.best_win_streak, streak), Math.max(row.best_loss_streak, -streak), correct ? elapsedMs : null);
     return streak;
   }
 
@@ -1128,7 +1129,7 @@ export class DataStore extends EventEmitter {
 
   triviaGetRecords(guildId) {
     const top = column => this.db.prepare(`SELECT user_id, ${column} AS value FROM trivia_scores WHERE guild_id = ? AND ${column} > 0 ORDER BY ${column} DESC, user_id ASC LIMIT 1`).get(String(guildId));
-    return Object.fromEntries(Object.entries({ winStreak: top('best_win_streak'), lossStreak: top('best_loss_streak'), firstGuesses: top('first_guesses') }).filter(([, v]) => v));
+    return Object.fromEntries(Object.entries({ winStreak: top('best_win_streak'), lossStreak: top('best_loss_streak'), firstGuesses: top('first_guesses'), fastest: this.db.prepare('SELECT user_id, fastest_ms AS value FROM trivia_scores WHERE guild_id = ? AND fastest_ms IS NOT NULL ORDER BY fastest_ms ASC, user_id ASC LIMIT 1').get(String(guildId)) }).filter(([, v]) => v));
   }
 }
 
