@@ -18,7 +18,7 @@ test('trivia skips a full fetch when the guild cache is complete', async () => {
       listTrackedUsers: () => ['1', '2', '3', '4'],
       getMessageCount: () => 1,
       getTriviaOptionCount: () => 4,
-      getRandomMessage: () => 'hello',
+      getRandomMessageWithMetadata: () => ({ content: 'hello', guild_id: 'complete', created_at: '2024-01-02T03:04:05.000Z' }),
       setActiveTriviaQuestion: () => {},
       restartTriviaClock: () => {},
     },

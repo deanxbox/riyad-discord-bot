@@ -5,6 +5,13 @@ import { getGuildMembers } from '../services/guild-members.js';
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
 const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
+// Where and when the mystery message was originally sent (<t:..> renders in each viewer's own timezone).
+const sourceLine = (client, guildId, at) => {
+  const unix = Math.floor(Date.parse(at) / 1000);
+  const server = (guildId && client?.guilds?.cache?.get(guildId)?.name) || 'an unknown server';
+  return `📍 Said in **${server}**${Number.isFinite(unix) ? ` on <t:${unix}:F>` : ''}`;
+};
+const sourceBlock = source => (source ? `\n${source}` : '');
 const streakNote = streak => (streak <= -3 ? ` 🧊 **${-streak} loss streak**` : '');
 const guessLines = (guesses, members, correctId, createdAt, live = false) => guesses
   .filter(g => g.guessId !== correctId)
@@ -79,7 +86,8 @@ async function startTrivia({ interaction, store }) {
     }
 
     const correctUserId = eligibleIds[Math.floor(Math.random() * eligibleIds.length)];
-    const messageContent = store.getRandomMessage(correctUserId);
+    const sample = store.getRandomMessageWithMetadata(correctUserId);
+    const messageContent = sample?.content;
 
     if (!messageContent) {
       await interaction.editReply('Could not retrieve a message. Please try again.');
@@ -98,7 +106,8 @@ async function startTrivia({ interaction, store }) {
     const distractorIds = shuffledPool.slice(0, optionCount - 1);
     const optionUserIds = fisherYates([correctUserId, ...distractorIds]);
 
-    store.setActiveTriviaQuestion(channelId, { correctUserId, messageContent, optionUserIds });
+    store.setActiveTriviaQuestion(channelId, { correctUserId, messageContent, optionUserIds, sourceGuildId: sample.guild_id, sourceAt: sample.created_at });
+    const source = sourceLine(interaction.client, sample.guild_id, sample.created_at);
     const members = await resolvePeople(interaction.client, guildMembers, optionUserIds);
 
     const posted = await interaction.editReply({
@@ -119,7 +128,7 @@ async function startTrivia({ interaction, store }) {
         store.clearActiveTriviaQuestion(channelId);
         const correctMember = members.get(correctUserId);
         await posted.edit({
-          embeds: [buildTriviaEmbed(messageContent, { expired: true, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId, createdAt) })],
+          embeds: [buildTriviaEmbed(messageContent, { expired: true, source, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId, createdAt) })],
           components: buildTriviaComponents(optionUserIds, members, { disabled: true, correctUserId }),
         });
       } catch (error) {
@@ -165,6 +174,7 @@ export async function handleTriviaButton(interaction, { store }) {
 
     const embed = buildTriviaEmbed(question.message_content, {
       solved: true,
+      source: sourceLine(interaction.client, question.source_guild_id, question.source_at),
       winnerName,
       correctName,
       elapsedMs,
@@ -190,7 +200,6 @@ export async function handleTriviaButton(interaction, { store }) {
         guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), people, question.correct_user_id, question.created_at, true),
       })],
     });
-    await interaction.followUp({ content: '❌ Wrong! That\'s your one attempt used up.', ephemeral: true });
   }
 }
 
@@ -198,7 +207,7 @@ const IMAGE_URL = /https?:\/\/\S+?\.(?:gif|png|jpe?g|webp)(?:\?\S*)?(?=\s|$)/i;
 // Other links (tenor, giphy, video) can't go in an embed image; post them as content so Discord unfurls them.
 const mediaLinks = text => (text.match(/https?:\/\/\S+/g) ?? []).filter(u => !IMAGE_URL.test(u)).join('\n');
 
-function buildTriviaEmbed(messageContent, { solved = false, expired = false, winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, streak = 0, guessLines: lines = '' } = {}) {
+function buildTriviaEmbed(messageContent, { solved = false, expired = false, source = '', winnerName, correctName, elapsedMs, bonus = false, bonusSeconds = 0, streak = 0, guessLines: lines = '' } = {}) {
   const image = messageContent.match(IMAGE_URL)?.[0];
   const display = messageContent.length > 900 ? `${messageContent.slice(0, 900)}…` : messageContent;
 
@@ -210,7 +219,7 @@ function buildTriviaEmbed(messageContent, { solved = false, expired = false, win
 >>> ${display}
 
 ⏰ Time's up! Nobody got it in time.
-The answer was **${correctName}**.${guessBlock(lines)}`)
+The answer was **${correctName}**.${sourceBlock(source)}${guessBlock(lines)}`)
       .setColor(0xED4245)
       .setImage(image ?? null)
       .setTimestamp();
@@ -224,7 +233,7 @@ The answer was **${correctName}**.${guessBlock(lines)}`)
         `✅ **${winnerName}** got it right in **${(elapsedMs / 1000).toFixed(2)}s**!\n` +
         (bonus ? `⚡ **x2 speed bonus!** Answered within ${bonusSeconds}s for 2 points.\n` : '') +
         (streak >= 3 ? `🔥 **${winnerName}** is on a **${streak} win streak**!\n` : '') +
-        `The answer was **${correctName}**.${guessBlock(lines)}`,
+        `The answer was **${correctName}**.${sourceBlock(source)}${guessBlock(lines)}`,
       )
       .setColor(0x57F287)
       .setImage(image ?? null)

@@ -137,6 +137,8 @@ export class DataStore extends EventEmitter {
 
   runMigrations() {
     this.addColumnIfMissing('trivia_active', 'guesses', "TEXT NOT NULL DEFAULT '[]'");
+    this.addColumnIfMissing('trivia_active', 'source_guild_id', 'TEXT');
+    this.addColumnIfMissing('trivia_active', 'source_at', 'TEXT');
     for (const column of ['wins', 'losses', 'first_guesses', 'streak', 'best_win_streak', 'best_loss_streak']) {
       this.addColumnIfMissing('trivia_scores', column, 'INTEGER NOT NULL DEFAULT 0'); // streak: +n win run, -n loss run
     }
@@ -300,7 +302,7 @@ export class DataStore extends EventEmitter {
     // biased (it favours rows after gaps), so pick a uniform OFFSET into the user's index instead.
     this.userMessageCountStmt = this.db.prepare('SELECT COUNT(*) AS count FROM user_messages WHERE user_id = ?');
     this.messageAtOffsetStmt = this.db.prepare(`
-      SELECT content, created_at, channel_id
+      SELECT content, created_at, channel_id, guild_id
       FROM user_messages
       WHERE user_id = ?
       ORDER BY rowid
@@ -325,12 +327,12 @@ export class DataStore extends EventEmitter {
     `);
 
     this.insertTriviaActiveStmt = this.db.prepare(`
-      INSERT OR REPLACE INTO trivia_active (guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at)
-      VALUES (?, ?, ?, ?, '[]', ?)
+      INSERT OR REPLACE INTO trivia_active (guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at, source_guild_id, source_at)
+      VALUES (?, ?, ?, ?, '[]', ?, ?, ?)
     `);
 
     this.selectTriviaActiveStmt = this.db.prepare(`
-      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, guesses, created_at
+      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, guesses, created_at, source_guild_id, source_at
       FROM trivia_active
       WHERE guild_id = ?
     `);
@@ -1037,13 +1039,15 @@ export class DataStore extends EventEmitter {
     return this.exportUserMessagesStmt.all(String(userId));
   }
 
-  setActiveTriviaQuestion(guildId, { correctUserId, messageContent, optionUserIds }) {
+  setActiveTriviaQuestion(guildId, { correctUserId, messageContent, optionUserIds, sourceGuildId = null, sourceAt = null }) {
     this.insertTriviaActiveStmt.run(
       String(guildId),
       String(correctUserId),
       messageContent,
       JSON.stringify(optionUserIds.map(String)),
       nowIso(),
+      sourceGuildId ? String(sourceGuildId) : null,
+      sourceAt,
     );
     this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
