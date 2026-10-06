@@ -5,10 +5,10 @@ import { getGuildMembers } from '../services/guild-members.js';
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 
 const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
-const guessLines = (guesses, members, correctId, createdAt) => guesses
+const guessLines = (guesses, members, correctId, createdAt, live = false) => guesses
   .filter(g => g.guessId !== correctId)
-  .map(g => `• **${nameOf(members, g.userId)}** guessed ${nameOf(members, g.guessId)}${g.at ? ` (${((g.at - Date.parse(createdAt)) / 1000).toFixed(2)}s)` : ''}`).join('\n');
-const guessBlock = lines => (lines ? `\n\n❌ **Wrong guesses:**\n${lines.slice(0, 800)}` : '');
+  .map(g => `• **${nameOf(members, g.userId)}** ${live ? 'has guessed incorrectly!' : `guessed ${nameOf(members, g.guessId)}`}${g.at ? ` (${((g.at - Date.parse(createdAt)) / 1000).toFixed(2)}s)` : ''}`).join('\n');
+const guessBlock = (lines, final = true) => (lines ? `\n\n❌ **${final ? 'Wrong guesses' : 'Incorrect so far'}:**\n${lines.slice(0, 800)}` : '');
 
 export const triviaCommand = {
   data: new SlashCommandBuilder()
@@ -146,10 +146,14 @@ export async function handleTriviaButton(interaction, { store }) {
       }),
     });
   } else {
-    await interaction.reply({
-      content: '❌ Wrong! That\'s your one attempt used up.',
-      ephemeral: true,
+    // `question` predates this guess, so re-read the stored guesses
+    const live = store.getActiveTriviaQuestion(guildId) ?? question;
+    await interaction.update({
+      embeds: [buildTriviaEmbed(question.message_content, {
+        guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), interaction.guild.members.cache, question.correct_user_id, question.created_at, true),
+      })],
     });
+    await interaction.followUp({ content: '❌ Wrong! That\'s your one attempt used up.', ephemeral: true });
   }
 }
 
@@ -192,7 +196,7 @@ The answer was **${correctName}**.${guessBlock(lines)}`)
 
   return new EmbedBuilder()
     .setTitle('🎭 Trivia Time!')
-    .setDescription(`**Who said this?**\n\n>>> ${display}`)
+    .setDescription(`**Who said this?**\n\n>>> ${display}${guessBlock(lines, false)}`)
     .setColor(0x5865F2)
     .setImage(image ?? null)
     .setFooter({ text: 'Each player gets one attempt — first correct answer wins a point!' })
