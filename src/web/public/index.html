@@ -5,18 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Riyad • Control Room</title>
+  <link rel="icon" href="/icon">
   <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <section id="login" class="login" aria-labelledby="login-title" hidden>
-    <div class="brand-mark" aria-hidden="true">R</div><p class="eyebrow">RIYAD BOT</p>
+    <div class="brand-mark" aria-hidden="true"><img src="/icon" alt=""></div><p class="eyebrow">RIYAD BOT</p>
     <h1 id="login-title">Control room</h1><p class="muted">Connect to your private local dashboard.</p>
     <label for="token">Dashboard token</label><input id="token" type="password" autocomplete="off">
     <button id="connect" class="primary">Connect securely</button><p id="error" role="alert"></p>
   </section>
   <main id="app" hidden>
-    <aside class="sidebar"><div class="brand"><span class="brand-mark">R</span><div><b>Riyad</b><small>CONTROL ROOM</small></div></div>
+    <aside class="sidebar"><div class="brand"><span class="brand-mark"><img src="/icon" alt=""></span><div><b>Riyad</b><small>CONTROL ROOM</small></div></div>
       <nav aria-label="Dashboard sections">
         <button class="nav active" data-tab="overview" aria-label="Overview">◈ <span>Overview</span></button>
         <button class="nav" data-tab="users" aria-label="Users">◎ <span>Users</span></button>

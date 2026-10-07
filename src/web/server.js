@@ -202,6 +202,12 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: https://cdn.discordapp.com https://media.discordapp.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     const pathname = new URL(request.url, 'http://localhost').pathname;
+    if (request.method === 'GET' && pathname === '/icon') { // public: the login page and favicon load before auth
+      const url = client?.user?.displayAvatarURL?.({ size: 128, extension: 'png' }) || defaultAvatarUrl;
+      response.writeHead(302, { Location: url, 'Cache-Control': 'max-age=300' });
+      response.end();
+      return;
+    }
     if (request.method === 'GET' && isStaticPathSafe(pathname)) {
       try {
         const [name, type] = staticFiles.get(pathname);
