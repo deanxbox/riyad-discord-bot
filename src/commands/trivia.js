@@ -3,6 +3,7 @@ import { isTriviaExpired } from '../services/data-store.js';
 import { getGuildMembers } from '../services/guild-members.js';
 
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
+export const TRIVIA_NEW_ID = 'trivia-new'; // deliberately not prefixed 'trivia:' so it is never read as an answer
 
 const nameOf = (members, id) => members.get(id)?.displayName ?? `<@${id}>`;
 // Where and when the mystery message was originally sent (<t:..> renders in each viewer's own timezone).
@@ -157,6 +158,9 @@ async function startTrivia({ interaction, store }) {
     }, store.triviaLifetimeMs + 500).unref();
 }
 
+// A button interaction supports reply/deferReply/editReply just like a slash command, so reuse the command.
+export const handleTriviaNewButton = (interaction, context) => triviaCommand.execute({ interaction, ...context });
+
 export async function handleTriviaButton(interaction, { store }) {
   const selectedUserId = interaction.customId.slice(TRIVIA_BUTTON_PREFIX.length);
   const guildId = interaction.guildId;
@@ -302,6 +306,8 @@ export function buildTriviaComponents(optionUserIds, membersCache, { disabled = 
 
   const rows = [];
   for (let i = 0; i < buttons.length; i += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  // Finished rounds offer a one-click rematch (the per-channel guard still stops overlapping rounds).
+  if (disabled) rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(TRIVIA_NEW_ID).setLabel('New Trivia').setEmoji('🎭').setStyle(ButtonStyle.Success)));
   return rows;
 }
 
