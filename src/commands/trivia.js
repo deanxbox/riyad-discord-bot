@@ -25,6 +25,16 @@ const starting = new Set();
 const ALREADY_ACTIVE = 'There\'s already an active trivia question in this channel! Answer it or wait for it to expire first.';
 
 // Guild members where available, otherwise the user's global profile (they may have left the server).
+// Serialises every message edit per channel so concurrent clicks/timers cannot land out of order.
+const editChains = new Map();
+function serial(channelId, fn) {
+  const run = (editChains.get(channelId) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  editChains.set(channelId, tail);
+  tail.then(() => { if (editChains.get(channelId) === tail) editChains.delete(channelId); });
+  return run;
+}
+
 async function resolvePeople(client, guildMembers, ids) {
   const people = new Map();
   await Promise.all(ids.map(async id => {
@@ -127,18 +137,18 @@ async function startTrivia({ interaction, store }) {
     const lifetimeMs = store.triviaLifetimeMs;
     for (const seconds of [3, 2, 1]) {
       if (lifetimeMs <= 4000) break;
-      setTimeout(async () => {
+      setTimeout(() => serial(channelId, async () => {
         try {
-          const active = store.getActiveTriviaQuestion(channelId);
+          const active = store.getActiveTriviaQuestion(channelId); // read inside the lock so it is the latest state
           if (active?.created_at !== createdAt) return; // solved or replaced
           await posted.edit({ embeds: [buildTriviaEmbed(messageContent, { countdown: seconds, guessLines: guessLines(JSON.parse(active.guesses ?? '[]'), members, correctUserId, createdAt, true) })] });
         } catch (error) {
           console.error('Failed to update trivia countdown:', error);
         }
-      }, lifetimeMs - seconds * 1000).unref();
+      }), lifetimeMs - seconds * 1000).unref();
     }
 
-    setTimeout(async () => {
+    setTimeout(() => serial(channelId, async () => {
       try {
         // Decide from the message itself: the DB row may already be gone (late click, new round).
         const active = store.getActiveTriviaQuestion(channelId);
@@ -155,7 +165,7 @@ async function startTrivia({ interaction, store }) {
       } catch (error) {
         console.error('Failed to expire trivia message:', error);
       }
-    }, store.triviaLifetimeMs + 500).unref();
+    }), store.triviaLifetimeMs + 500).unref();
 }
 
 // A button interaction supports reply/deferReply/editReply just like a slash command, so reuse the command.
@@ -173,10 +183,10 @@ export async function handleTriviaButton(interaction, { store }) {
     if (q && interaction.message) { // clicked after it timed out: show it as expired
       const ids = JSON.parse(q.option_user_ids);
       const people = await resolvePeople(interaction.client, interaction.guild.members.cache, ids);
-      await interaction.update({
+      await serial(interaction.channelId, () => interaction.update({
         embeds: [buildTriviaEmbed(q.message_content, { expired: true, source: sourceLine(interaction.client, q.source_guild_id, q.source_at, q.source_channel_id, q.source_message_id), correctName: people.get(q.correct_user_id)?.displayName ?? `<@${q.correct_user_id}>`, guessLines: guessLines(JSON.parse(q.guesses ?? '[]'), people, q.correct_user_id, q.created_at) })],
         components: buildTriviaComponents(ids, people, { disabled: true, correctUserId: q.correct_user_id }),
-      });
+      }));
       return;
     }
     await interaction.reply({ content: 'There\'s no active trivia question right now.', ephemeral: true });
@@ -218,22 +228,25 @@ export async function handleTriviaButton(interaction, { store }) {
       guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), people, question.correct_user_id, question.created_at),
     });
 
-    await interaction.update({
+    await serial(interaction.channelId, () => interaction.update({
       embeds: [embed],
       components: buildTriviaComponents(optionUserIds, people, {
         disabled: true,
         correctUserId: question.correct_user_id,
       }),
-    });
+    }));
   } else {
-    // `question` predates this guess, so re-read the stored guesses
-    const live = store.getActiveTriviaQuestion(interaction.channelId) ?? question;
     const people = await resolvePeople(interaction.client, interaction.guild.members.cache, JSON.parse(question.option_user_ids));
+    await serial(interaction.channelId, async () => {
+    // Re-read inside the lock: other guesses may have landed while names were resolving.
+    const live = store.getActiveTriviaQuestion(interaction.channelId);
+    if (live?.created_at !== question.created_at) return interaction.deferUpdate(); // solved/expired: never overwrite that embed
     await interaction.update({
       embeds: [buildTriviaEmbed(question.message_content, {
         countdown: (left => (left > 0 && left <= 3000 ? Math.ceil(left / 1000) : 0))(store.triviaLifetimeMs - (Date.now() - Date.parse(question.created_at))),
         guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), people, question.correct_user_id, question.created_at, true),
       })],
+    });
     });
   }
 }
