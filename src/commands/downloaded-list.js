@@ -12,7 +12,7 @@ export const downloadedListCommand = {
     }
 
     await interaction.reply({
-      content: mentionList(store.listTrackedUsers(), 'No users have stored messages.', 'Downloaded List'),
+      ...mentionList(store.listTrackedUsers(), 'No users have stored messages.', 'Downloaded List'),
       ephemeral: true,
     });
   },

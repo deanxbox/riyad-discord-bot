@@ -5,10 +5,15 @@ export class NextReplyQueue extends EventEmitter {
   constructor() {
     super();
     this.entries = [];
+    this.totalBytes = 0;
   }
 
   enqueue({ message = '', image = null, targetUserId = null, createdByUserId }) {
     if (!message.trim() && !image) throw new RangeError('Supply a message or image.');
+    const bytes = Buffer.byteLength(message, 'utf8') + (image?.data?.length ?? 0);
+    if (this.entries.length >= 50 || this.totalBytes + bytes > 64 * 1024 * 1024) {
+      throw new RangeError('Reply queue is full (50 entries or 64 MiB). Remove or consume replies before adding more.');
+    }
     const entry = {
       id: crypto.randomUUID(),
       message,
@@ -16,9 +21,11 @@ export class NextReplyQueue extends EventEmitter {
       targetUserId,
       createdByUserId,
       createdAt: new Date().toISOString(),
+      bytes,
     };
 
     this.entries.push(entry);
+    this.totalBytes += bytes;
     this.emit('change', { type: 'queue', id: entry.id });
     return entry;
   }
@@ -35,6 +42,7 @@ export class NextReplyQueue extends EventEmitter {
     }
 
     const [entry] = this.entries.splice(index, 1);
+    this.totalBytes -= entry.bytes;
     this.emit('change', { type: 'queue', id: entry.id });
     return entry;
   }
@@ -43,6 +51,7 @@ export class NextReplyQueue extends EventEmitter {
     const index = this.entries.findIndex((entry) => entry.id === id);
     if (index === -1) return null;
     const [entry] = this.entries.splice(index, 1);
+    this.totalBytes -= entry.bytes;
     this.emit('change', { type: 'queue', id: entry.id });
     return entry;
   }

@@ -178,6 +178,10 @@ async function main() {
     const jobs = new EventEmitter();
     jobs.getActiveJobs = () => [];
     jobs.getJobStatus = () => null;
+    jobs.deleteUser = async (id, { messagesOnly = false } = {}) => {
+      if (messagesOnly) store.deleteStoredMessages(id);
+      else store.deleteUserData(id);
+    };
     const startedJobs = [];
     jobs.startHeadless = options => { startedJobs.push(options); return { created: true }; };
     const queue = new NextReplyQueue();

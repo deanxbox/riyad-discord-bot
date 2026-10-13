@@ -1,5 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { formatDateTime, requireAdmin } from './helpers.js';
+import { contentPayload, formatDateTime, requireAdmin } from './helpers.js';
 
 export const randomLineCommand = {
   data: new SlashCommandBuilder()
@@ -21,7 +21,7 @@ export const randomLineCommand = {
     const sample = store.getRandomMessageWithMetadata(targetUser.id);
 
     await interaction.reply({
-      content: sample
+      ...contentPayload(sample
         ? [
             `**Random stored line for <@${targetUser.id}>**`,
             `When: ${formatDateTime(sample.created_at)}`,
@@ -29,7 +29,7 @@ export const randomLineCommand = {
             '',
             sample.content,
           ].filter(Boolean).join('\n')
-        : `No stored messages found for <@${targetUser.id}>.`,
+        : `No stored messages found for <@${targetUser.id}>.`),
       ephemeral: true,
     });
   },

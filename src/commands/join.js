@@ -33,10 +33,11 @@ export const joinCommand = {
 
     const query = interaction.options.getString('voice_channel', true);
     const persistence = interaction.options.getBoolean('persistence') ?? true;
+    await interaction.deferReply({ ephemeral: true });
     const resolved = await voiceManager.resolveVoiceChannel(interaction.guild, query);
 
     if (resolved.ambiguous) {
-      await interaction.reply({
+      await interaction.editReply({
         content: `Multiple voice channels matched that query: ${resolved.matches.map((channel) => `#${channel.name} (${channel.id})`).join(', ')}`,
         ephemeral: true,
       });
@@ -46,7 +47,7 @@ export const joinCommand = {
     const channel = resolved.channel;
 
     if (!channel) {
-      await interaction.reply({
+      await interaction.editReply({
         content: 'No matching voice channel was found by that name or ID.',
         ephemeral: true,
       });
@@ -56,14 +57,14 @@ export const joinCommand = {
     try {
       await voiceManager.join(channel, { persistence });
 
-      await interaction.reply({
+      await interaction.editReply({
         content: `Joined voice channel <#${channel.id}>.\nPersistence: ${persistence ? 'enabled' : 'disabled'}.`,
         ephemeral: true,
       });
     } catch (error) {
       console.error(`Failed to join voice channel ${channel.id}`, error);
 
-      await interaction.reply({
+      await interaction.editReply({
         content: 'Failed to join that voice channel.',
         ephemeral: true,
       });

@@ -1,4 +1,5 @@
 let state = null, stream = null, reconnectTimer = null, reconnectDelay = 1000, refreshTimer = null, selected = 'overview';
+let refreshRunning = null, refreshPending = null, refreshVersion = 0;
 const selectedUsers = new Set();
 const channelLoads = new WeakMap();
 const $ = id => document.getElementById(id);
@@ -20,6 +21,7 @@ function avatar(user) {
 }
 function person(user) { return user?.displayName || user?.username || user?.id || 'Unknown'; }
 function showLogin(expired = false) {
+  refreshVersion++; refreshPending = null;
   stream?.close(); stream = null; clearTimeout(refreshTimer); clearTimeout(reconnectTimer);
   if ($('drawer').open) $('drawer').close();
   $('app').hidden = true; $('login').hidden = false; state = null;
@@ -309,22 +311,38 @@ function render(stateData) {
     if (!state.leaderboard.length) $('scores').append(node('li', 'No trivia scores for this server yet.', 'empty-state'));
   }
 }
-async function refresh() {
-  const guildId = selected === 'trivia' ? $('trivia-guild').value : $('download-guild').value;
-  const userId = $('download-user').value;
-  const data = await (await api(`/api/state?guildId=${encodeURIComponent(guildId || '')}&userId=${encodeURIComponent(userId)}&sort=${$('trivia-sort').value}`)).json();
-  const x = window.scrollX, y = window.scrollY;
-  render(data);
-  window.scrollTo(x, y);
+function refreshSelection() {
+  return [selected, selected === 'trivia' ? $('trivia-guild').value : $('download-guild').value, $('download-user').value, $('trivia-sort').value];
 }
-async function refreshJobs() {
-  const result = await (await api('/api/downloads')).json();
-  if (!state) return;
-  const x = window.scrollX, y = window.scrollY;
-  state.jobs = result.jobs; state.stats.activeDownloads = result.jobs.length;
-  if (selected === 'downloads') renderJobs(result.jobs);
-  window.scrollTo(x, y);
+function requestRefresh(mode) {
+  refreshPending = refreshPending === 'state' || mode === 'state' ? 'state' : 'jobs';
+  if (refreshRunning) return refreshRunning;
+  refreshRunning = (async () => {
+    let error;
+    while (refreshPending) {
+      const mode = refreshPending, version = refreshVersion, selection = refreshSelection();
+      refreshPending = null;
+      try {
+        const [, guildId, userId, sort] = selection;
+        const url = mode === 'jobs' ? '/api/downloads' : `/api/state?guildId=${encodeURIComponent(guildId || '')}&userId=${encodeURIComponent(userId)}&sort=${sort}`;
+        const data = await (await api(url)).json();
+        if (version !== refreshVersion || JSON.stringify(selection) !== JSON.stringify(refreshSelection())) continue;
+        const x = window.scrollX, y = window.scrollY;
+        if (mode === 'state') render(data);
+        else if (state) {
+          state.jobs = data.jobs; state.stats.activeDownloads = data.jobs.length;
+          if (selected === 'downloads') renderJobs(data.jobs);
+        }
+        window.scrollTo(x, y);
+        error = null;
+      } catch (e) { error = e; }
+    }
+    if (error) throw error;
+  })().finally(() => { refreshRunning = null; });
+  return refreshRunning;
 }
+function refresh() { return requestRefresh('state'); }
+function refreshJobs() { return requestRefresh('jobs'); }
 $('connect').onclick = async () => {
   const token = $('token').value; $('token').value = '';
   try { await request('/api/login', { token }); await connect(); toast('Connected'); }

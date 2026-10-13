@@ -36,16 +36,20 @@ export const nextReplyCommand = {
       return;
     }
 
-    const entry = nextReplyQueue.enqueue({
+    try { nextReplyQueue.enqueue({
       message,
       targetUserId: userId ?? null,
       createdByUserId: interaction.user.id,
-    });
+    }); } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      await interaction.reply({ content: error.message, ephemeral: true });
+      return;
+    }
 
     await interaction.reply({
       content: userId
-        ? `Queued the next Riyad reply for <@${userId}>.\n\n${entry.message}`
-        : `Queued the next Riyad reply for the next qualifying auto-response.\n\n${entry.message}`,
+        ? `Queued the next Riyad reply for <@${userId}>.`
+        : 'Queued the next Riyad reply for the next qualifying auto-response.',
       ephemeral: true,
     });
   },

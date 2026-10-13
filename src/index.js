@@ -9,6 +9,7 @@ import { DownloadJobManager } from './services/download-jobs.js';
 import { NextReplyQueue } from './services/next-reply-queue.js';
 import { VoiceManager } from './services/voice-manager.js';
 import { startWebDashboard } from './web/server.js';
+import { logError } from './services/errors.js';
 
 const store = new DataStore(config.dbPath, {
   defaultReplyChancePercent: config.defaultReplyChancePercent,
@@ -29,6 +30,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent,
   ],
 });
@@ -42,23 +44,23 @@ const webDashboard = config.webDashboardEnabled
   : null;
 
 client.once(Events.ClientReady, async () => {
-  await handleReady(client, config);
+  await handleReady(client, config).catch(error => logError('Discord ready handler failed', error));
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  await handleInteractionCreate(interaction, context);
+  await handleInteractionCreate(interaction, context).catch(error => logError(`Discord interaction ${interaction.id} failed`, error));
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  await handleMessageCreate(message, context);
+  await handleMessageCreate(message, context).catch(error => logError(`Discord message ${message.id} failed`, error));
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-  await voiceManager.handleVoiceStateUpdate(oldState, newState);
+  await voiceManager.handleVoiceStateUpdate(oldState, newState).catch(error => logError(`Discord voice state ${oldState.guild.id} failed`, error));
 });
 
 client.on(Events.Raw, async (packet) => {
-  await handleRaw(packet, context);
+  await handleRaw(packet, context).catch(error => logError(`Discord raw event ${packet.t} failed`, error));
 });
 
 client.on(Events.Error, (error) => {

@@ -17,11 +17,12 @@ export const exportUserCommand = {
       return;
     }
 
+    await interaction.deferReply({ ephemeral: true });
     const targetUser = interaction.options.getUser('user', true);
     const rows = store.exportUserMessages(targetUser.id);
 
     if (!rows.length) {
-      await interaction.reply({
+      await interaction.editReply({
         content: `No stored messages found for <@${targetUser.id}>.`,
         ephemeral: true,
       });
@@ -36,7 +37,7 @@ export const exportUserCommand = {
       name: `${targetUser.id}-messages.txt`,
     });
 
-    await interaction.reply({
+    await interaction.editReply({
       content: `Exported ${rows.length} stored messages for <@${targetUser.id}>.`,
       files: [attachment],
       ephemeral: true,

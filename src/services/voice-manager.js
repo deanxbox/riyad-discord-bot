@@ -111,6 +111,7 @@ export class VoiceManager {
 
     setTimeout(async () => {
       try {
+        if (this.persistentTargets.get(oldState.guild.id) !== persistentChannelId) return;
         await this.join(channel, { persistence: true });
       } catch (error) {
         console.error(`Failed to rejoin persistent voice channel ${channel.id}`, error);

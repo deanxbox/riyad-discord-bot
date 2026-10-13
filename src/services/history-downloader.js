@@ -206,7 +206,7 @@ export async function downloadUserHistory({
   let reachedCheckpoint = resume?.reachedCheckpoint ?? false;
 
   throwIfCancelled(signal);
-  if (!resume) store.beginStagedUserDownload(jobId, targetUserId);
+  const snapshotRowId = !resume ? store.beginStagedUserDownload(jobId, targetUserId) : null;
 
   try {
     while (!reachedCheckpoint && (limit === null || scannedCount < limit)) {
@@ -312,6 +312,7 @@ export async function downloadUserHistory({
     const finalCount = store.commitStagedUserDownload(jobId, targetUserId, mediaSkipped, {
       guildId,
       checkpoint,
+      snapshotRowId,
       merge: scoped,
       newestId: !scoped && limit === null &&
         (reachedCheckpoint || (!checkpoint && exhausted &&

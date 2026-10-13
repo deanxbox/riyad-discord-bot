@@ -1,5 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { requireAdmin } from './helpers.js';
+import { contentPayload, requireAdmin } from './helpers.js';
 
 export const sayCommand = {
   data: new SlashCommandBuilder()
@@ -35,7 +35,7 @@ export const sayCommand = {
     }
 
     await interaction.reply({
-      content: `Saying: ${message}`,
+      content: 'Sending your message.',
       ephemeral: true,
     });
 
@@ -45,7 +45,7 @@ export const sayCommand = {
         referenceMessage = await interaction.channel.messages.fetch(messageId);
       } catch (error) {
         if (error.code === 10008) {
-          await interaction.channel.send(message);
+          await interaction.channel.send(message.length <= 2000 ? message : contentPayload(message));
           return;
         }
 
@@ -56,10 +56,10 @@ export const sayCommand = {
         });
         return;
       }
-      await referenceMessage.reply(message);
+      await referenceMessage.reply(message.length <= 2000 ? message : contentPayload(message));
       return;
     }
 
-    await interaction.channel.send(message);
+    await interaction.channel.send(message.length <= 2000 ? message : contentPayload(message));
   },
 };

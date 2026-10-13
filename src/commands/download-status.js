@@ -1,5 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { formatDownloadJobSummary, formatTrackedUserSummary, requireAdmin } from './helpers.js';
+import { contentPayload, formatDownloadJobSummary, formatTrackedUserSummary, requireAdmin } from './helpers.js';
 
 export const downloadStatusCommand = {
   data: new SlashCommandBuilder()
@@ -23,9 +23,9 @@ export const downloadStatusCommand = {
       const activeJobs = downloadJobs.getActiveJobs();
 
       await interaction.reply({
-        content: activeJobs.length
+        ...contentPayload(activeJobs.length
           ? `**Active downloads:**\n${activeJobs.map((job) => `<@${job.targetUserId}>: ${job.status}, ${job.downloadedCount} text messages stored, ${job.mediaSkipped} media-only skipped`).join('\n')}`
-          : 'No active download jobs.',
+          : 'No active download jobs.'),
         ephemeral: true,
       });
       return;
@@ -35,12 +35,12 @@ export const downloadStatusCommand = {
     const summary = store.getUserSummary(targetUser.id);
 
     await interaction.reply({
-      content: [
+      ...contentPayload([
         formatTrackedUserSummary(summary, config),
         '',
         `**Download job:**`,
         formatDownloadJobSummary(job),
-      ].join('\n'),
+      ].join('\n')),
       ephemeral: true,
     });
   },

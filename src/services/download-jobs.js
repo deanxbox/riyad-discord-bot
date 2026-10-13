@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { createSearchLimiter, DownloadCancelledError, downloadUserHistory, scanChannelsForUsers } from './history-downloader.js';
+import { logError } from './errors.js';
+import { truncateContent } from '../commands/helpers.js';
 
 const CANCEL_PREFIX = 'download-cancel:';
 const RENDER_INTERVAL_MS = 1500;
@@ -62,7 +64,7 @@ function formatStatus(job) {
     statusLine = `Download failed: ${job.errorMessage}`;
   }
 
-  return [
+  return truncateContent([
     `**Download job for <@${job.targetUserId}>**`,
     statusLine,
     buildProgressBar(processedCount, goalCount),
@@ -77,7 +79,7 @@ function formatStatus(job) {
     job.status === 'completed' || job.status === 'cancelled'
       ? null
       : 'The saved archive will only change if this download finishes successfully.',
-  ].filter(Boolean).join('\n');
+  ].filter(Boolean).join('\n'));
 }
 
 function buildComponents(job, disabled = false) {
@@ -126,11 +128,14 @@ export class DownloadJobManager extends EventEmitter {
     this.scanTail = Promise.resolve();
     this.deletingUsers = new Set();
     this.searchRequest = createSearchLimiter(client.rest);
-    this.publishProgress = createProgressPublisher(change => this.emit('change', change));
+    this.publishProgress = createProgressPublisher(change => {
+      try { this.emit('change', change); }
+      catch (error) { logError(`Download progress event ${change.id}`, error); }
+    });
   }
 
   targetKey(guildId, userId) {
-    return `${guildId}:${userId}`;
+    return String(userId);
   }
 
   getActiveJob(guildId, userId) {
@@ -138,7 +143,7 @@ export class DownloadJobManager extends EventEmitter {
     return jobId ? this.jobs.get(jobId) ?? null : null;
   }
 
-  createJob({ id = randomUUID(), guildId, requestedById, targetUserId, limit, channelIds = [], onProgress = null, resume = null }) {
+  createJob({ id = randomUUID(), guildId, requestedById, targetUserId, limit, channelIds = [], onProgress = null, resume = null, snapshotRowId = null }) {
     let resolveCompletion;
 
     const completion = new Promise((resolve) => {
@@ -148,6 +153,7 @@ export class DownloadJobManager extends EventEmitter {
     return {
       id,
       resume,
+      snapshotRowId,
       guildId,
       requestedById,
       targetUserId,
@@ -202,22 +208,24 @@ export class DownloadJobManager extends EventEmitter {
     const queuedIndex = this.pending.indexOf(job);
     if (queuedIndex !== -1) {
       this.pending.splice(queuedIndex, 1);
-      void this.run(job);
+      void this.run(job).catch(error => logError(`Cancelled download job ${job.id}`, error));
     }
 
-    void this.render(job, { force: true });
+    void this.render(job, { force: true }).catch(error => logError(`Download cancel render ${job.id}`, error));
 
     return { cancelled: true, job };
   }
 
-  async deleteUser(userId) {
+  async deleteUser(userId, { messagesOnly = false } = {}) {
+    userId = String(userId);
     if (this.deletingUsers.has(userId)) throw new Error('User deletion already in progress.');
     this.deletingUsers.add(userId);
     try {
       const jobs = this.getActiveJobs().filter(job => job.targetUserId === userId);
       for (const job of jobs) this.cancelJob(job.guildId, userId);
       await Promise.all(jobs.map(job => job.completion));
-      this.store.deleteUserData(userId);
+      if (messagesOnly) this.store.deleteStoredMessages(userId);
+      else this.store.deleteUserData(userId);
     } finally {
       this.deletingUsers.delete(userId);
     }
@@ -247,14 +255,14 @@ export class DownloadJobManager extends EventEmitter {
 
     this.track(job);
 
-    await interaction.editReply({
-      content: formatStatus(job),
-      components: buildComponents(job),
-    });
-
-    job.progressMessage = await interaction.fetchReply();
-
-    this.schedule(job);
+    try {
+      await interaction.editReply({ content: formatStatus(job), components: buildComponents(job) });
+      job.progressMessage = await interaction.fetchReply();
+    } catch (error) {
+      logError(`Download initial message ${job.id}`, error);
+    } finally {
+      this.schedule(job);
+    }
 
     return job;
   }
@@ -293,7 +301,7 @@ export class DownloadJobManager extends EventEmitter {
       jobs.push(job);
     }
     if (jobs.length) {
-      this.scanTail = this.scanTail.then(() => this.runScan(jobs, guildId, channelIds)).catch(() => {});
+      this.scanTail = this.scanTail.then(() => this.runScan(jobs, guildId, channelIds)).catch(error => logError('Channel scan lifecycle failed', error));
     }
     return { created: jobs.length, jobs };
   }
@@ -324,7 +332,7 @@ export class DownloadJobManager extends EventEmitter {
         this.finishScanJob(job, 'completed');
       }
     } catch (error) {
-      console.error('Channel scan failed', error);
+      logError('Channel scan failed', error);
       for (const job of live) this.finishScanJob(job, 'failed', error);
     }
   }
@@ -342,9 +350,9 @@ export class DownloadJobManager extends EventEmitter {
   }
 
   track(job, { persist = true } = {}) {
+    if (persist) this.store.saveDownloadJob(job);
     this.jobs.set(job.id, job);
     this.jobsByTarget.set(this.targetKey(job.guildId, job.targetUserId), job.id);
-    if (persist) this.store.saveDownloadJob(job);
     this.publishProgress(job, 'created');
   }
 
@@ -412,7 +420,7 @@ export class DownloadJobManager extends EventEmitter {
     void this.run(job).finally(() => {
       this.runningCount--;
       this.drain();
-    });
+    }).catch(error => logError(`Download lifecycle ${job.id}`, error));
   }
 
   drain() {
@@ -422,6 +430,7 @@ export class DownloadJobManager extends EventEmitter {
   }
 
   async run(job) {
+    let outcome;
     try {
       const result = await downloadUserHistory({
         client: this.client,
@@ -457,7 +466,7 @@ export class DownloadJobManager extends EventEmitter {
           if (currentMessage) job.currentMessage = currentMessage;
           this.publishProgress(job, oldStatus === status ? 'progress' : 'status');
 
-          await job.onProgress?.(job);
+          await this.notify(job);
           await this.render(job);
         },
       });
@@ -471,32 +480,34 @@ export class DownloadJobManager extends EventEmitter {
       job.lastPageCount = 0;
       job.retryAfterSeconds = 0;
       job.documentsIndexed = 0;
-      this.publishProgress(job, 'finished');
-
-      await job.onProgress?.(job);
-      await this.render(job, { force: true, disableButtons: true });
-      job.resolveCompletion({ ok: true, job });
+      outcome = { ok: true, job };
     } catch (error) {
       if (error instanceof DownloadCancelledError) {
         job.status = 'cancelled';
-        this.publishProgress(job, 'finished');
-        await job.onProgress?.(job);
-        await this.render(job, { force: true, disableButtons: true });
-        job.resolveCompletion({ ok: false, cancelled: true, job });
+        outcome = { ok: false, cancelled: true, job };
       } else {
-        console.error(`Download job ${job.id} failed`, error);
+        logError(`Download job ${job.id} failed`, error);
         job.status = 'failed';
         job.errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        this.publishProgress(job, 'finished');
-        await job.onProgress?.(job);
-        await this.render(job, { force: true, disableButtons: true });
-        job.resolveCompletion({ ok: false, cancelled: false, error, job });
+        outcome = { ok: false, cancelled: false, error, job };
       }
     } finally {
-      this.store.deleteDownloadJob(job.id);
-      this.jobsByTarget.delete(this.targetKey(job.guildId, job.targetUserId));
-      this.jobs.delete(job.id);
+      try {
+        if (!outcome?.ok) this.store.deleteDownloadJob(job.id);
+        this.publishProgress(job, 'finished');
+        await this.notify(job);
+        await this.render(job, { force: true, disableButtons: true });
+      } finally {
+        this.jobsByTarget.delete(this.targetKey(job.guildId, job.targetUserId));
+        this.jobs.delete(job.id);
+        job.resolveCompletion(outcome ?? { ok: false, job });
+      }
     }
+  }
+
+  async notify(job) {
+    try { await job.onProgress?.(job); }
+    catch (error) { logError(`Download progress callback ${job.id}`, error); }
   }
 
   async render(job, { force = false, disableButtons = false } = {}) {
@@ -516,7 +527,7 @@ export class DownloadJobManager extends EventEmitter {
       content: formatStatus(job),
       components: buildComponents(job, disableButtons),
     }).catch((error) => {
-      console.error(`Failed to render download job ${job.id}`, error);
+      logError(`Failed to render download job ${job.id}`, error);
     });
   }
 }

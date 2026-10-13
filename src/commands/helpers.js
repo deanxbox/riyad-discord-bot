@@ -20,10 +20,10 @@ export async function requireAdmin(interaction, config) {
 
 export function mentionList(userIds, emptyMessage, title) {
   if (!userIds.length) {
-    return emptyMessage;
+    return contentPayload(emptyMessage);
   }
 
-  return `**${title}:**\n${userIds.map((userId) => `<@${userId}>`).join('\n')}`;
+  return contentPayload(`**${title}:**\n${userIds.map((userId) => `<@${userId}>`).join('\n')}`);
 }
 
 export function formatDateTime(value) {
@@ -76,3 +76,17 @@ export function formatDownloadJobSummary(job) {
     job.status === 'indexing' ? `Retry after: ${job.retryAfterSeconds}s` : null,
   ].filter(Boolean).join('\n');
 }
+export function truncateContent(content, limit = 2000) {
+  if (content.length <= limit) return content;
+  let end = limit - 1;
+  if (/[\uD800-\uDBFF]/.test(content[end - 1])) end--;
+  return `${content.slice(0, end)}…`;
+}
+
+export function contentPayload(content, name = 'message.txt') {
+  return content.length <= 2000 ? { content } : {
+    content: truncateContent(content),
+    files: [{ attachment: Buffer.from(content, 'utf8'), name }],
+  };
+}
+

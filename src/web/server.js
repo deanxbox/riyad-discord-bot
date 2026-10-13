@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PermissionsBitField } from 'discord.js';
 import { SCAN_MIN_USERS } from '../services/download-jobs.js';
+import { logError } from '../services/errors.js';
 
 const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
 const snowflake = /^\d{17,20}$/;
@@ -366,7 +367,7 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
         if (data.tracked !== undefined) store.setTracked(id, data.tracked);
         if (data.nerded !== undefined) store.setNerded(id, data.nerded);
         if (data.replyChanceOverride !== undefined) store.setUserReplyChanceOverride(id, data.replyChanceOverride);
-        if (data.deleteMessages) store.deleteStoredMessages(id);
+        if (data.deleteMessages) await downloadJobs.deleteUser(id, { messagesOnly: true });
         const { userId, ...summary } = store.getUserSummary(id);
         json(response, 200, { ...summary, user: await resolveUser(id) }); return;
       }
@@ -396,10 +397,11 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
       if (pathname === '/api/users/bulk' && request.method === 'POST') {
         const data = await readBody(request);
         const guildId = data?.guildId ?? config.guildId;
+        const userIds = new Set(store.listUserIds());
         if (!data || !['download', 'delete'].includes(data.action) ||
           !Array.isArray(data.userIds) || !data.userIds.length || data.userIds.length > 1000 ||
           new Set(data.userIds).size !== data.userIds.length || !data.userIds.every(isSnowflake) ||
-          data.userIds.some(id => !store.listUserIds().includes(id)) ||
+          data.userIds.some(id => !userIds.has(id)) ||
           (data.action === 'download' && (!isSnowflake(guildId) || !client?.guilds?.cache?.has(guildId)))) throw new RangeError('Invalid bulk request.');
         if (data.action === 'delete') {
           for (const id of data.userIds) await downloadJobs.deleteUser(id);
@@ -440,9 +442,22 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
       if (line && request.method === 'GET') { json(response, 200, { message: store.getRandomMessageWithMetadata(line[1]) }); return; }
       const exportMatch = /^\/api\/users\/(\d{17,20})\/export$/.exec(pathname);
       if (exportMatch && request.method === 'GET') {
-        const rows = store.exportUserMessages(exportMatch[1]);
         response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${exportMatch[1]}.txt"`, 'Cache-Control': 'no-store' });
-        response.end(rows.map(row => `${row.created_at}\t${row.content}`).join('\n')); return;
+        const rows = store.exportUserMessages(exportMatch[1]); // one synchronous query = consistent snapshot
+        for (let i = 0; i < rows.length && !response.destroyed; i += 500) {
+          const chunk = (i ? '\n' : '') + rows.slice(i, i + 500).map(row => `${row.created_at}\t${row.content}`).join('\n');
+          if (!response.write(chunk)) {
+            await new Promise((resolve, reject) => {
+              const cleanup = () => { response.off('drain', drain); response.off('close', close); response.off('error', fail); };
+              const drain = () => { cleanup(); resolve(); };
+              const close = () => { cleanup(); resolve(); };
+              const fail = error => { cleanup(); reject(error); };
+              response.once('drain', drain); response.once('close', close); response.once('error', fail);
+            });
+          }
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        response.end(); return;
       }
       if (pathname === '/api/refresh-all' && request.method === 'POST') {
         const data = await readBody(request);
@@ -481,6 +496,8 @@ export function startWebDashboard({ config, store, downloadJobs, nextReplyQueue,
       }
       json(response, 404, { error: 'Not found' });
     } catch (error) {
+      if (!(error instanceof RangeError || error instanceof SyntaxError) && !error.statusCode) logError(`Dashboard ${request.method} ${pathname} failed`, error);
+      if (response.headersSent) { response.destroy(); return; }
       json(response, error.statusCode || (error instanceof RangeError || error instanceof SyntaxError ? 400 : 500),
         { error: error.statusCode === 413 ? 'Request body too large.' : error instanceof RangeError || error instanceof SyntaxError ? error.message : 'Internal error' });
     }

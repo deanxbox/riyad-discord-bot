@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { isTriviaExpired } from '../services/data-store.js';
-import { getGuildMembers } from '../services/guild-members.js';
+import { logError } from '../services/errors.js';
 
 export const TRIVIA_BUTTON_PREFIX = 'trivia:';
 export const TRIVIA_NEW_ID = 'trivia-new'; // deliberately not prefixed 'trivia:' so it is never read as an answer
@@ -35,10 +35,10 @@ function serial(channelId, fn) {
   return run;
 }
 
-async function resolvePeople(client, guildMembers, ids) {
+async function resolvePeople(client, guild, ids) {
   const people = new Map();
   await Promise.all(ids.map(async id => {
-    const member = guildMembers.get(id);
+    const member = guild.members.cache.get(id) ?? await guild.members.fetch(id).catch(() => null);
     if (member) return people.set(id, member);
     const user = client?.users?.cache?.get(id) ?? await client?.users?.fetch(id).catch(() => null);
     if (user) people.set(id, { displayName: user.globalName ?? user.username, user });
@@ -88,7 +88,6 @@ async function startTrivia({ interaction, store }) {
     }
 
     await interaction.deferReply();
-    const guildMembers = await getGuildMembers(guild);
 
     // Everyone with downloaded messages is eligible, whether or not they are still in the server.
     const eligibleIds = store.listTrackedUsers().filter(id => store.getMessageCount(id) > 0);
@@ -121,12 +120,13 @@ async function startTrivia({ interaction, store }) {
 
     store.setActiveTriviaQuestion(channelId, { correctUserId, messageContent, optionUserIds, sourceGuildId: sample.guild_id, sourceAt: sample.created_at, sourceChannelId: sample.channel_id, sourceMessageId: sample.message_id });
     const source = sourceLine(interaction.client, sample.guild_id, sample.created_at, sample.channel_id, sample.message_id);
-    const members = await resolvePeople(interaction.client, guildMembers, optionUserIds);
+    const roundId = store.getActiveTriviaQuestion(channelId).round_id;
+    const members = await resolvePeople(interaction.client, guild, optionUserIds);
 
     const posted = await interaction.editReply({
       content: mediaLinks(messageContent) || undefined,
       embeds: [buildTriviaEmbed(messageContent)],
-      components: buildTriviaComponents(optionUserIds, members),
+      components: buildTriviaComponents(optionUserIds, members, { roundId }),
     });
 
     store.restartTriviaClock(channelId); // clock starts when the question is on screen, not when it was saved
@@ -140,10 +140,10 @@ async function startTrivia({ interaction, store }) {
       setTimeout(() => serial(channelId, async () => {
         try {
           const active = store.getActiveTriviaQuestion(channelId); // read inside the lock so it is the latest state
-          if (active?.created_at !== createdAt) return; // solved or replaced
+          if (active?.round_id !== roundId) return; // solved or replaced
           await posted.edit({ embeds: [buildTriviaEmbed(messageContent, { countdown: seconds, guessLines: guessLines(JSON.parse(active.guesses ?? '[]'), members, correctUserId, createdAt, true) })] });
         } catch (error) {
-          console.error('Failed to update trivia countdown:', error);
+          logError('Failed to update trivia countdown:', error);
         }
       }), lifetimeMs - seconds * 1000).unref();
     }
@@ -152,7 +152,7 @@ async function startTrivia({ interaction, store }) {
       try {
         // Decide from the message itself: the DB row may already be gone (late click, new round).
         const active = store.getActiveTriviaQuestion(channelId);
-        const mine = active?.created_at === createdAt;
+        const mine = active?.round_id === roundId;
         const current = await posted.fetch().catch(() => null);
         if (!(current ? current.embeds[0]?.title?.includes('Trivia Time') : mine)) return; // already solved or expired
         const guesses = mine ? JSON.parse(active.guesses ?? '[]') : [];
@@ -160,10 +160,10 @@ async function startTrivia({ interaction, store }) {
         const correctMember = members.get(correctUserId);
         await posted.edit({
           embeds: [buildTriviaEmbed(messageContent, { expired: true, source, correctName: correctMember?.displayName ?? `<@${correctUserId}>`, guessLines: guessLines(guesses, members, correctUserId, createdAt) })],
-          components: buildTriviaComponents(optionUserIds, members, { disabled: true, correctUserId }),
+          components: buildTriviaComponents(optionUserIds, members, { roundId, disabled: true, correctUserId }),
         });
       } catch (error) {
-        console.error('Failed to expire trivia message:', error);
+        logError('Failed to expire trivia message:', error);
       }
     }), store.triviaLifetimeMs + 500).unref();
 }
@@ -172,29 +172,40 @@ async function startTrivia({ interaction, store }) {
 export const handleTriviaNewButton = (interaction, context) => triviaCommand.execute({ interaction, ...context });
 
 export async function handleTriviaButton(interaction, { store }) {
-  const selectedUserId = interaction.customId.slice(TRIVIA_BUTTON_PREFIX.length);
+  const parts = interaction.customId.slice(TRIVIA_BUTTON_PREFIX.length).split(':');
+  const [roundId, selectedUserId] = parts;
   const guildId = interaction.guildId;
   const answererId = interaction.user.id;
 
-  const attempt = store.triviaAttempt(guildId, answererId, selectedUserId, interaction.channelId);
+  const active = store.getActiveTriviaQuestion(interaction.channelId);
+  if (parts.length !== 2 || !roundId || !selectedUserId || (active && active.round_id !== roundId)) {
+    await interaction.reply({ content: 'That trivia button belongs to an old round. Use the current question.', ephemeral: true });
+    return;
+  }
+  await interaction.deferUpdate();
+  const attempt = store.triviaAttempt(guildId, answererId, selectedUserId, interaction.channelId, roundId);
+  if (attempt.status === 'stale_round') {
+    await interaction.followUp({ content: 'That trivia button belongs to an old round. Use the current question.', ephemeral: true });
+    return;
+  }
 
   if (attempt.status === 'no_question') {
     const q = attempt.question;
     if (q && interaction.message) { // clicked after it timed out: show it as expired
       const ids = JSON.parse(q.option_user_ids);
-      const people = await resolvePeople(interaction.client, interaction.guild.members.cache, ids);
-      await serial(interaction.channelId, () => interaction.update({
+      const people = await resolvePeople(interaction.client, interaction.guild, ids);
+      await serial(interaction.channelId, () => interaction.editReply({
         embeds: [buildTriviaEmbed(q.message_content, { expired: true, source: sourceLine(interaction.client, q.source_guild_id, q.source_at, q.source_channel_id, q.source_message_id), correctName: people.get(q.correct_user_id)?.displayName ?? `<@${q.correct_user_id}>`, guessLines: guessLines(JSON.parse(q.guesses ?? '[]'), people, q.correct_user_id, q.created_at) })],
-        components: buildTriviaComponents(ids, people, { disabled: true, correctUserId: q.correct_user_id }),
+        components: buildTriviaComponents(ids, people, { roundId, disabled: true, correctUserId: q.correct_user_id }),
       }));
       return;
     }
-    await interaction.reply({ content: 'There\'s no active trivia question right now.', ephemeral: true });
+    await interaction.followUp({ content: 'There\'s no active trivia question right now.', ephemeral: true });
     return;
   }
 
   if (attempt.status === 'already_answered') {
-    await interaction.reply({ content: 'You\'ve already used your one attempt!', ephemeral: true });
+    await interaction.followUp({ content: 'You\'ve already used your one attempt!', ephemeral: true });
     return;
   }
 
@@ -211,7 +222,7 @@ export async function handleTriviaButton(interaction, { store }) {
 
     const guild = interaction.guild;
     const optionUserIds = JSON.parse(question.option_user_ids);
-    const people = await resolvePeople(interaction.client, guild.members.cache, optionUserIds);
+    const people = await resolvePeople(interaction.client, guild, optionUserIds);
     const correctMember = people.get(question.correct_user_id);
     const correctName = correctMember?.displayName ?? `<@${question.correct_user_id}>`;
     const winnerName = interaction.member?.displayName ?? interaction.user.username;
@@ -228,20 +239,21 @@ export async function handleTriviaButton(interaction, { store }) {
       guessLines: guessLines(JSON.parse(question.guesses ?? '[]'), people, question.correct_user_id, question.created_at),
     });
 
-    await serial(interaction.channelId, () => interaction.update({
+    await serial(interaction.channelId, () => interaction.editReply({
       embeds: [embed],
       components: buildTriviaComponents(optionUserIds, people, {
+        roundId,
         disabled: true,
         correctUserId: question.correct_user_id,
       }),
     }));
   } else {
-    const people = await resolvePeople(interaction.client, interaction.guild.members.cache, JSON.parse(question.option_user_ids));
+    const people = await resolvePeople(interaction.client, interaction.guild, JSON.parse(question.option_user_ids));
     await serial(interaction.channelId, async () => {
     // Re-read inside the lock: other guesses may have landed while names were resolving.
     const live = store.getActiveTriviaQuestion(interaction.channelId);
-    if (live?.created_at !== question.created_at) return interaction.deferUpdate(); // solved/expired: never overwrite that embed
-    await interaction.update({
+    if (live?.round_id !== question.round_id) return; // solved/expired: never overwrite that embed
+    await interaction.editReply({
       embeds: [buildTriviaEmbed(question.message_content, {
         countdown: (left => (left > 0 && left <= 3000 ? Math.ceil(left / 1000) : 0))(store.triviaLifetimeMs - (Date.now() - Date.parse(question.created_at))),
         guessLines: guessLines(JSON.parse(live.guesses ?? '[]'), people, question.correct_user_id, question.created_at, true),
@@ -298,7 +310,7 @@ The answer was **${correctName}**.${sourceBlock(source)}${guessBlock(lines)}`)
     .setTimestamp();
 }
 
-export function buildTriviaComponents(optionUserIds, membersCache, { disabled = false, correctUserId = null } = {}) {
+export function buildTriviaComponents(optionUserIds, membersCache, { roundId = 'legacy', disabled = false, correctUserId = null } = {}) {
   const buttons = optionUserIds.map(userId => {
     const member = membersCache.get(userId);
     const nick = member?.displayName ?? `User …${userId.slice(-4)}`;
@@ -311,7 +323,7 @@ export function buildTriviaComponents(optionUserIds, membersCache, { disabled = 
     }
 
     return new ButtonBuilder()
-      .setCustomId(`${TRIVIA_BUTTON_PREFIX}${userId}`)
+      .setCustomId(`${TRIVIA_BUTTON_PREFIX}${roundId}:${userId}`)
       .setLabel(label)
       .setStyle(style)
       .setDisabled(disabled);

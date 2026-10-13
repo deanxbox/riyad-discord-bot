@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 
 const DEFAULT_TRIVIA_LIFETIME_MS = 60 * 1000;
 export const TRIVIA_MIN_RATIO_GUESSES = 10;
@@ -26,7 +27,7 @@ export class DataStore extends EventEmitter {
     super();
     this.defaultTriviaBonusSeconds = Number.isFinite(triviaBonusSeconds) && triviaBonusSeconds >= 0 && triviaBonusSeconds <= 60 ? triviaBonusSeconds : 1.5;
     this.defaultTriviaTimeoutSeconds = Number.isFinite(triviaTimeoutSeconds) && triviaTimeoutSeconds >= 5 && triviaTimeoutSeconds <= 3600 ? triviaTimeoutSeconds : DEFAULT_TRIVIA_LIFETIME_MS / 1000;
-    this.on('change', change => { if (change?.type === 'user') this.messageSourcesCache = null; });
+    this.on('change', change => { if (change?.messagesChanged) this.messageSourcesCache = null; });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     this.db = new DatabaseSync(dbPath);
@@ -136,6 +137,10 @@ export class DataStore extends EventEmitter {
   }
 
   runMigrations() {
+    this.addColumnIfMissing('download_jobs', 'snapshot_rowid', 'INTEGER');
+    // Older pending jobs have no start snapshot: preserve their existing archive rather than risk deleting live rows.
+    this.db.exec('UPDATE download_jobs SET snapshot_rowid = 0 WHERE snapshot_rowid IS NULL');
+    this.addColumnIfMissing('trivia_active', 'round_id', 'TEXT');
     this.addColumnIfMissing('trivia_active', 'guesses', "TEXT NOT NULL DEFAULT '[]'");
     this.addColumnIfMissing('trivia_active', 'source_guild_id', 'TEXT');
     this.addColumnIfMissing('trivia_active', 'source_at', 'TEXT');
@@ -241,6 +246,7 @@ export class DataStore extends EventEmitter {
 
     this.insertMessageStmt = this.db.prepare(`
       INSERT OR IGNORE INTO user_messages (
+        rowid,
         message_id,
         user_id,
         guild_id,
@@ -248,7 +254,8 @@ export class DataStore extends EventEmitter {
         content,
         created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES (MAX(COALESCE((SELECT MAX(rowid) FROM user_messages), 0),
+        COALESCE((SELECT MAX(snapshot_rowid) FROM download_jobs), 0)) + 1, ?, ?, ?, ?, ?, ?)
     `);
 
     this.insertStagingMessageStmt = this.db.prepare(`
@@ -293,6 +300,9 @@ export class DataStore extends EventEmitter {
         created_at
       FROM download_staging_messages
       WHERE job_id = ?
+        AND NOT EXISTS (SELECT 1 FROM user_messages m
+          WHERE m.message_id = download_staging_messages.message_id
+            AND m.user_id = download_staging_messages.user_id AND m.rowid > ?)
     `);
 
     this.promoteNewStagingMessagesStmt = this.db.prepare(`
@@ -330,12 +340,12 @@ export class DataStore extends EventEmitter {
     `);
 
     this.insertTriviaActiveStmt = this.db.prepare(`
-      INSERT OR REPLACE INTO trivia_active (guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at, source_guild_id, source_at, source_channel_id, source_message_id)
-      VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO trivia_active (guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, created_at, source_guild_id, source_at, source_channel_id, source_message_id, round_id)
+      VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)
     `);
 
     this.selectTriviaActiveStmt = this.db.prepare(`
-      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, guesses, created_at, source_guild_id, source_at, source_channel_id, source_message_id
+      SELECT guild_id, correct_user_id, message_content, option_user_ids, answered_user_ids, guesses, created_at, source_guild_id, source_at, source_channel_id, source_message_id, round_id
       FROM trivia_active
       WHERE guild_id = ?
     `);
@@ -446,7 +456,7 @@ export class DataStore extends EventEmitter {
 
   setMetadata(key, value) {
     this.upsertMetadataStmt.run(key, value);
-    if (['reply_chance_percent', 'reaction_chance_denominator', 'always_reply_user_id', 'nerd_emoji'].includes(key) || key.startsWith('dashboard_')) this.emit('change', { type: 'config', key });
+    if (['reply_chance_percent', 'reaction_chance_denominator', 'always_reply_user_id', 'nerd_emoji', 'trivia_timeout_seconds', 'trivia_bonus_seconds', 'trivia_option_count', 'reply_delay_seconds', 'typing_indicator'].includes(key) || key.startsWith('dashboard_')) this.emit('change', { type: 'config', key });
   }
 
   getDashboardSetting(key, fallback) {
@@ -799,7 +809,7 @@ export class DataStore extends EventEmitter {
 
     this.trackedUsers.add(normalizedUserId);
     this.messageCounts.set(normalizedUserId, 0);
-    this.emit('change', { type: 'user', userId: normalizedUserId });
+    this.emit('change', { type: 'user', userId: normalizedUserId, messagesChanged: true });
   }
 
   beginStagedUserDownload(jobId, userId) {
@@ -810,11 +820,20 @@ export class DataStore extends EventEmitter {
       this.ensureUser(normalizedUserId);
       this.deleteStagingMessagesStmt.run(normalizedJobId);
     });
+    const snapshotRowId = this.db.prepare('SELECT snapshot_rowid FROM download_jobs WHERE id = ?').get(normalizedJobId)?.snapshot_rowid
+      ?? this.getArchiveSnapshot();
+    this.db.prepare('UPDATE download_jobs SET snapshot_rowid = ? WHERE id = ?').run(snapshotRowId, normalizedJobId);
+    return snapshotRowId;
+  }
+
+  getArchiveSnapshot() {
+    return Number(this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS id FROM user_messages').get().id);
   }
 
   saveDownloadJob(job) {
-    this.db.prepare('INSERT OR REPLACE INTO download_jobs (id, guild_id, user_id, requested_by, limit_count, channel_ids, state) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(job.id, job.guildId, job.targetUserId, job.requestedById ?? null, job.limit, JSON.stringify(job.channelIds), job.resume ? JSON.stringify(job.resume) : null);
+    job.snapshotRowId ??= this.getArchiveSnapshot();
+    this.db.prepare('INSERT OR REPLACE INTO download_jobs (id, guild_id, user_id, requested_by, limit_count, channel_ids, state, snapshot_rowid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(job.id, job.guildId, job.targetUserId, job.requestedById ?? null, job.limit, JSON.stringify(job.channelIds), job.resume ? JSON.stringify(job.resume) : null, job.snapshotRowId);
   }
 
   deleteDownloadJob(jobId) {
@@ -824,7 +843,7 @@ export class DataStore extends EventEmitter {
   getSavedDownloadJobs() {
     return this.db.prepare('SELECT * FROM download_jobs').all().map(row => ({
       id: row.id, guildId: row.guild_id, targetUserId: row.user_id, requestedById: row.requested_by,
-      limit: row.limit_count, channelIds: JSON.parse(row.channel_ids), resume: row.state ? JSON.parse(row.state) : null,
+      limit: row.limit_count, channelIds: JSON.parse(row.channel_ids), resume: row.state ? JSON.parse(row.state) : null, snapshotRowId: row.snapshot_rowid,
     }));
   }
 
@@ -869,7 +888,7 @@ export class DataStore extends EventEmitter {
     return savedGuild === String(guildId) && /^\d+$/.test(messageId ?? '') ? messageId : null;
   }
 
-  commitStagedUserDownload(jobId, userId, mediaSkipped = 0, { guildId, checkpoint = null, newestId = null, merge = false } = {}) {
+  commitStagedUserDownload(jobId, userId, mediaSkipped = 0, { guildId, checkpoint = null, newestId = null, merge = false, snapshotRowId } = {}) {
     const normalizedJobId = String(jobId);
     const normalizedUserId = String(userId);
     const key = `download_checkpoint:${normalizedUserId}`;
@@ -881,30 +900,30 @@ export class DataStore extends EventEmitter {
         if (this.getUserDownloadCheckpoint(normalizedUserId, guildId) !== checkpoint) {
           throw new Error('Download checkpoint changed while searching; retry the download.');
         }
-        const added = this.promoteNewStagingMessagesStmt.run(normalizedJobId).changes;
-        nextCount = this.getMessageCount(normalizedUserId) + added;
+        this.promoteNewStagingMessagesStmt.run(normalizedJobId);
         mediaSkipped += this.getUserSummary(normalizedUserId).mediaSkipped;
       } else if (merge) {
-        const added = this.promoteNewStagingMessagesStmt.run(normalizedJobId).changes;
-        nextCount = this.getMessageCount(normalizedUserId) + added;
+        this.promoteNewStagingMessagesStmt.run(normalizedJobId);
         // ponytail: scoped searches cannot deduplicate media-only IDs; retain the aggregate until they are stored per message.
         mediaSkipped = this.getUserSummary(normalizedUserId).mediaSkipped;
       } else {
-        nextCount = this.getStagedDownloadCount(normalizedJobId);
-        this.deleteUserMessagesStmt.run(normalizedUserId);
-        this.promoteStagingMessagesStmt.run(normalizedJobId);
+        const snapshot = snapshotRowId ?? this.db.prepare('SELECT snapshot_rowid FROM download_jobs WHERE id = ?').get(normalizedJobId)?.snapshot_rowid ?? this.getArchiveSnapshot();
+        this.db.prepare('DELETE FROM user_messages WHERE user_id = ? AND rowid <= ?').run(normalizedUserId, snapshot);
+        this.promoteStagingMessagesStmt.run(normalizedJobId, snapshot);
       }
+      nextCount = Number(this.userMessageCountStmt.get(normalizedUserId).count);
       this.updateTrackedStmt.run(1, nowIso(), normalizedUserId);
       this.updateMessageCountStmt.run(nextCount, nowIso(), nowIso(), normalizedUserId);
       this.replaceMediaSkippedStmt.run(mediaSkipped, normalizedUserId);
       if (newestId && guildId) this.upsertMetadataStmt.run(key, `${guildId}:${newestId}`);
       else if (!checkpoint && !merge) this.deleteMetadataStmt.run(key);
       this.deleteStagingMessagesStmt.run(normalizedJobId);
+      this.deleteDownloadJob(normalizedJobId);
     });
 
     this.trackedUsers.add(normalizedUserId);
     this.messageCounts.set(normalizedUserId, nextCount);
-    this.emit('change', { type: 'user', userId: normalizedUserId });
+    this.emit('change', { type: 'user', userId: normalizedUserId, messagesChanged: true });
 
     return nextCount;
   }
@@ -920,6 +939,7 @@ export class DataStore extends EventEmitter {
 
     const normalizedUserId = String(userId);
     let insertedCount = 0;
+    let nextCount;
 
     this.transaction(() => {
       this.ensureUser(normalizedUserId);
@@ -936,13 +956,15 @@ export class DataStore extends EventEmitter {
 
         insertedCount += result.changes;
       }
+      if (insertedCount > 0) {
+        nextCount = this.getMessageCount(normalizedUserId) + insertedCount;
+        this.updateMessageCountStmt.run(nextCount, nowIso(), null, normalizedUserId);
+      }
     });
 
     if (insertedCount > 0) {
-      const nextCount = this.getMessageCount(normalizedUserId) + insertedCount;
       this.messageCounts.set(normalizedUserId, nextCount);
-      this.updateMessageCountStmt.run(nextCount, nowIso(), null, normalizedUserId);
-      this.emit('change', { type: 'user', userId: normalizedUserId });
+      this.emit('change', { type: 'user', userId: normalizedUserId, messagesChanged: true });
     }
   }
 
@@ -972,7 +994,7 @@ export class DataStore extends EventEmitter {
     this.trackedUsers.delete(normalizedUserId);
     this.nerdedUsers.delete(normalizedUserId);
     this.messageCounts.delete(normalizedUserId);
-    this.emit('change', { type: 'user', userId: normalizedUserId });
+    this.emit('change', { type: 'user', userId: normalizedUserId, messagesChanged: true });
   }
 
   deleteStoredMessages(userId) {
@@ -984,29 +1006,12 @@ export class DataStore extends EventEmitter {
       this.updateMessageCountStmt.run(0, nowIso(), null, normalizedUserId);
     });
     this.messageCounts.set(normalizedUserId, 0);
-    this.emit('change', { type: 'user', userId: normalizedUserId });
+    this.emit('change', { type: 'user', userId: normalizedUserId, messagesChanged: true });
   }
 
   appendLiveMessage(message) {
     const normalizedUserId = String(message.userId);
-
-    this.ensureUser(normalizedUserId);
-
-    const result = this.insertMessageStmt.run(
-      message.messageId,
-      normalizedUserId,
-      message.guildId,
-      message.channelId,
-      message.content,
-      message.createdAt,
-    );
-
-    if (result.changes > 0) {
-      const nextCount = this.getMessageCount(normalizedUserId) + 1;
-      this.messageCounts.set(normalizedUserId, nextCount);
-      this.updateMessageCountStmt.run(nextCount, nowIso(), null, normalizedUserId);
-      this.emit('change', { type: 'user', userId: normalizedUserId });
-    }
+    this.addDownloadedMessages(normalizedUserId, [message]);
   }
 
   incrementMediaSkipped(userId) {
@@ -1054,6 +1059,7 @@ export class DataStore extends EventEmitter {
       sourceAt,
       sourceChannelId ? String(sourceChannelId) : null,
       sourceMessageId ? String(sourceMessageId) : null,
+      randomUUID(),
     );
     this.emit('change', { type: 'trivia', guildId: String(guildId) });
   }
@@ -1075,7 +1081,7 @@ export class DataStore extends EventEmitter {
   // Atomically registers a user's answer attempt.
   // Returns { status: 'no_question' | 'already_answered' | 'ok', question? }
   // The active question is keyed by channel (channelId defaults to the guild ID); stats stay per guild.
-  triviaAttempt(guildId, userId, selectedUserId = null, channelId = guildId) {
+  triviaAttempt(guildId, userId, selectedUserId = null, channelId = guildId, roundId = null) {
     const normalizedGuildId = String(guildId);
     const normalizedChannelId = String(channelId);
     const normalizedUserId = String(userId);
@@ -1083,6 +1089,7 @@ export class DataStore extends EventEmitter {
     const result = this.transaction(() => {
       const question = this.selectTriviaActiveStmt.get(normalizedChannelId);
       if (!question) return { status: 'no_question' };
+      if (selectedUserId !== null && (!roundId || roundId !== question.round_id || !JSON.parse(question.option_user_ids).includes(selectedUserId))) return { status: 'stale_round' };
       if (isTriviaExpired(question, Date.now(), this.triviaLifetimeMs)) {
         this.deleteTriviaActiveStmt.run(normalizedChannelId);
         return { status: 'no_question', expired: true, question };

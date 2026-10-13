@@ -1,8 +1,20 @@
 import { commandCollection } from '../commands/index.js';
 import { handleTriviaButton, handleTriviaNewButton, TRIVIA_BUTTON_PREFIX, TRIVIA_NEW_ID } from '../commands/trivia.js';
 import { handleScoreboardSort, SCOREBOARD_SORT_ID } from '../commands/scoreboard.js';
+import { logError } from '../services/errors.js';
 
 export async function handleInteractionCreate(interaction, context) {
+  try {
+    await dispatchInteraction(interaction, context);
+  } catch (error) {
+    logError(`Interaction failed: ${interaction.customId ?? interaction.commandName}`, error);
+    const response = { content: 'That interaction failed unexpectedly.', ephemeral: true };
+    await (interaction.deferred || interaction.replied ? interaction.followUp(response) : interaction.reply(response))
+      .catch(error => logError('Interaction error acknowledgement failed', error));
+  }
+}
+
+async function dispatchInteraction(interaction, context) {
   if (interaction.isStringSelectMenu() && interaction.customId === SCOREBOARD_SORT_ID) {
     await handleScoreboardSort(interaction, context);
     return;
@@ -12,7 +24,7 @@ export async function handleInteractionCreate(interaction, context) {
     try {
       await handleTriviaNewButton(interaction, context);
     } catch (error) {
-      console.error('New trivia button failed', error);
+      logError('New trivia button failed', error);
       const response = { content: 'Could not start a new trivia.', ephemeral: true };
       await (interaction.deferred || interaction.replied ? interaction.followUp(response) : interaction.reply(response)).catch(() => {});
     }
@@ -48,7 +60,7 @@ export async function handleInteractionCreate(interaction, context) {
       ...context,
     });
   } catch (error) {
-    console.error(`Command failed: ${interaction.commandName}`, error);
+    logError(`Command failed: ${interaction.commandName}`, error);
 
     const response = {
       content: 'That command failed unexpectedly.',

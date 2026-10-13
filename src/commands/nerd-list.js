@@ -12,7 +12,7 @@ export const nerdListCommand = {
     }
 
     await interaction.reply({
-      content: mentionList(store.listNerdedUsers(), 'No users are currently nerded.', 'Nerd List'),
+      ...mentionList(store.listNerdedUsers(), 'No users are currently nerded.', 'Nerd List'),
       ephemeral: true,
     });
   },

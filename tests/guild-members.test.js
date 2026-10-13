@@ -11,15 +11,17 @@ test('trivia skips a full fetch when the guild cache is complete', async () => {
     cache, fetch: () => { throw Error('unexpected full fetch'); },
   } };
   let reply;
+  let active = null;
   await triviaCommand.execute({
     interaction: { guild, deferReply: async () => {}, editReply: async value => { reply = value; } },
     store: {
-      getActiveTriviaQuestion: () => null,
+      triviaLifetimeMs: 60000,
+      getActiveTriviaQuestion: () => active,
       listTrackedUsers: () => ['1', '2', '3', '4'],
       getMessageCount: () => 1,
       getTriviaOptionCount: () => 4,
       getRandomMessageWithMetadata: () => ({ content: 'hello', guild_id: 'complete', created_at: '2024-01-02T03:04:05.000Z' }),
-      setActiveTriviaQuestion: () => {},
+      setActiveTriviaQuestion: () => { active = { round_id: 'test-round', created_at: new Date().toISOString() }; },
       restartTriviaClock: () => {},
     },
   });

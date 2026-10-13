@@ -1,4 +1,5 @@
 import { evaluateReplyDecision } from '../services/reply-policy.js';
+import { contentPayload } from '../commands/helpers.js';
 
 function truncateReply(content) {
   return content.length > 2000 ? content.slice(0, 2000) : content;
@@ -72,9 +73,10 @@ export async function handleMessageCreate(message, { store, config, nextReplyQue
           if (left <= 8000) break;
         }
       }
+      const payload = reply ? (queuedReply ? contentPayload(reply) : { content: truncateReply(reply) }) : {};
       await message.reply({
-        ...(reply ? { content: truncateReply(reply) } : {}),
-        ...(queuedReply?.image ? { files: [{ attachment: queuedReply.image.data, name: queuedReply.image.name }] } : {}),
+        ...payload,
+        ...(queuedReply?.image ? { files: [...(payload.files ?? []), { attachment: queuedReply.image.data, name: queuedReply.image.name }] } : {}),
         allowedMentions: { repliedUser: false },
       }).catch((error) => {
         console.error(`Failed to reply to message ${message.id}`, error);
